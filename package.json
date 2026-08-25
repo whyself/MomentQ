@@ -1,0 +1,22 @@
+{
+  "name": "momentq",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "build": "pnpm --filter momentq-dsh-bundle build",
+    "test": "pnpm --filter momentq-dsh-bundle test",
+    "typecheck": "pnpm --filter momentq-dsh-bundle typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsdown": "^0.22.2",
+    "typescript": "^6.0.3",
+    "vite-tsconfig-paths": "^6.1.1",
+    "vitest": "^4.1.8"
+  }
+}
+
