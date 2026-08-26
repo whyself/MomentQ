@@ -126,7 +126,8 @@ async function publishState(directory: string, state: MomentQState): Promise<Mom
   return parsed.data
 }
 
-function effectiveInstructions(input: {
+/** Resolve and length-check the frozen instructions for a newly created Session. */
+export function resolveSessionInstructions(input: {
   defaultInstructions: string
   requestedInstructions?: string
   maxInstructionsLength: number
@@ -157,6 +158,20 @@ export async function writeState(directory: string, state: MomentQState): Promis
   return await serialized(directory, async () => await publishState(directory, state))
 }
 
+/** Atomically read, transform, validate and replace one existing state document. */
+export async function updateState(
+  directory: string,
+  update: (state: MomentQState) => MomentQState | Promise<MomentQState>,
+): Promise<MomentQState> {
+  return await serialized(directory, async () => {
+    const current = await readStateOrUndefined(directory)
+    if (current === undefined) {
+      throw new MomentQStateNotFoundError(`MomentQ state is missing in "${resolve(directory)}"`)
+    }
+    return await publishState(directory, await update(current))
+  })
+}
+
 /** Create or refresh one content state without changing its Session ownership. */
 export async function ensureState(input: {
   directory: string
@@ -182,7 +197,7 @@ export async function ensureState(input: {
       return { state, created: false }
     }
 
-    const instructions = effectiveInstructions(input)
+    const instructions = resolveSessionInstructions(input)
     const createdAt = new Date().toISOString()
     const state = await publishState(directory, {
       schemaVersion: 1,
@@ -203,4 +218,3 @@ export async function ensureState(input: {
     return { state, created: true }
   })
 }
-
