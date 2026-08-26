@@ -9,7 +9,7 @@ export default defineConfig({
     sdk: 'src/sdk.ts',
   },
   format: 'esm',
+  fixedExtension: false,
   dts: true,
   clean: true,
 })
-

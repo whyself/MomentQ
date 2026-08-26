@@ -1,0 +1,50 @@
+# MomentQ Host state and Session routing. DSH_HOME is validated by the service.
+- insert:
+    - id: momentq-host
+      name: momentq-dsh-bundle
+      config:
+        root: !!js process.env.MOMENTQ_DATA_ROOT
+
+    - id: momentq-http-api
+      name: momentq-dsh-bundle/http-api
+
+# New MomentQ Sessions use the image-capable DeepSeek route by default.
+- id: agent-default-model
+  config:
+    provider: deepseek-official
+    model: deepseek-v4-flash-vision-exp
+
+# Web disables model-facing filesystem tools globally. Restore the native
+# implementations; the MomentQ Agent scope hides everything except exact-file
+# wrappers for grep and read.
+- id: tool-fs
+  disabled: false
+
+- id: tool-fs-search
+  disabled: false
+  config:
+    sampleOverCapGlobResults: false
+
+# The shipped MomentQ roster is the only composition source.
+- id: agent-presets
+  disabled: true
+
+- insert:
+    - id: momentq-agent-presets
+      name: '@deepseek-ai/dsh-agent-presets'
+      inject: [momentq]
+      config:
+        default: momentq
+        roots:
+          - path: !!js ctx.momentq.presetRoot
+            trust: system
+        includeUserRoot: false
+
+# There are no mutating model tools, and no wider permission target is exposed.
+- id: permission
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+    defaultPreset: read-only
