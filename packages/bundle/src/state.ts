@@ -64,7 +64,34 @@ export const momentQStateSchema = z.object({
     active: sessionRecordSchema.nullable(),
     retired: z.array(retiredSessionSchema),
   }).strict(),
-}).strict()
+}).strict().superRefine((state, ctx) => {
+  const records = [
+    ...(state.session.active === null ? [] : [{ ...state.session.active, generation: state.session.generation }]),
+    ...state.session.retired,
+  ]
+  const ids = new Set<string>()
+  const generations = new Set<number>()
+  for (const record of records) {
+    let expected: string
+    try {
+      expected = String(sessionIdFor(state.identity, record.generation))
+    } catch (error) {
+      ctx.addIssue({ code: 'custom', message: error instanceof Error ? error.message : String(error) })
+      continue
+    }
+    if (record.id !== expected) {
+      ctx.addIssue({ code: 'custom', message: `Session id does not match generation ${record.generation}` })
+    }
+    if (record.generation > state.session.generation) {
+      ctx.addIssue({ code: 'custom', message: 'Session generation exceeds the current generation' })
+    }
+    if (ids.has(record.id) || generations.has(record.generation)) {
+      ctx.addIssue({ code: 'custom', message: 'Session ids and generations must be unique' })
+    }
+    ids.add(record.id)
+    generations.add(record.generation)
+  }
+})
 
 /** Durable content state. */
 export type MomentQState = z.infer<typeof momentQStateSchema>

@@ -35,19 +35,24 @@ export interface MomentQClientOptions {
   fetch?: typeof globalThis.fetch | undefined
 }
 
-interface ErrorEnvelope {
-  ok: false
-  error: { code: MomentQApiErrorCode; message: string }
-}
-
 /** Minimal SDK surface shared by the browser extension and test clients. */
 export class MomentQClient {
   private readonly baseUrl: string
   private readonly fetcher: typeof globalThis.fetch
 
   constructor(options: MomentQClientOptions) {
-    this.baseUrl = options.baseUrl.replace(/\/+$/, '')
-    if (!/^https?:\/\//.test(this.baseUrl)) throw new Error('MomentQ baseUrl must be an HTTP URL')
+    let parsed: URL
+    try {
+      parsed = new URL(options.baseUrl)
+    } catch (error) {
+      throw new Error('MomentQ baseUrl must be a loopback HTTP URL', { cause: error })
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.hostname !== '127.0.0.1'
+      || parsed.username !== '' || parsed.password !== '' || parsed.search !== '' || parsed.hash !== '') {
+      throw new Error('MomentQ baseUrl must be a loopback HTTP URL')
+    }
+    parsed.pathname = parsed.pathname.replace(/\/+$/, '')
+    this.baseUrl = parsed.toString().replace(/\/+$/, '')
     this.fetcher = options.fetch ?? globalThis.fetch
     if (this.fetcher === undefined) throw new Error('MomentQClient requires fetch')
   }
@@ -107,8 +112,19 @@ export class MomentQClient {
       throw new MomentQClientError('internal', 'MomentQ returned an invalid response', response.status)
     }
     if ((envelope as { ok: unknown }).ok === false) {
-      const failure = envelope as ErrorEnvelope
-      throw new MomentQClientError(failure.error.code, failure.error.message, response.status)
+      const detail = (envelope as { error?: unknown }).error
+      const codes: MomentQApiErrorCode[] = [
+        'invalid-request', 'content-not-found', 'session-conflict', 'internal',
+      ]
+      if (typeof detail !== 'object' || detail === null) {
+        throw new MomentQClientError('internal', 'MomentQ returned an invalid response', response.status)
+      }
+      const code = (detail as { code?: unknown }).code
+      const message = (detail as { message?: unknown }).message
+      if (typeof code !== 'string' || !codes.includes(code as MomentQApiErrorCode) || typeof message !== 'string') {
+        throw new MomentQClientError('internal', 'MomentQ returned an invalid response', response.status)
+      }
+      throw new MomentQClientError(code as MomentQApiErrorCode, message, response.status)
     }
     if ((envelope as { ok: unknown }).ok !== true || !Object.hasOwn(envelope, 'value')) {
       throw new MomentQClientError('internal', 'MomentQ returned an invalid response', response.status)
@@ -116,4 +132,3 @@ export class MomentQClient {
     return (envelope as { ok: true; value: T }).value
   }
 }
-

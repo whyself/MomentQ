@@ -66,6 +66,9 @@ function apiFailure(error: unknown): { status: number; code: ApiErrorCode; messa
     return { status: 404, code: 'content-not-found', message: 'MomentQ content was not found' }
   }
   const message = error instanceof Error ? error.message : String(error)
+  if (/invalid JSON in MomentQ state|invalid MomentQ state/i.test(message)) {
+    return { status: 500, code: 'internal', message: 'MomentQ request failed' }
+  }
   if (/invalid|must|does not match|not accept|exceeds/i.test(message)) {
     return { status: 400, code: 'invalid-request', message: 'MomentQ request is invalid' }
   }
@@ -87,6 +90,24 @@ export function apply(ctx: Context): void {
       if (req.method !== 'POST') {
         sendJson(res, 405, { ok: false, error: { code: 'invalid-request', message: 'POST required' } })
         return
+      }
+      const mediaType = req.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
+      if (mediaType !== 'application/json') {
+        sendJson(res, 415, { ok: false, error: { code: 'invalid-request', message: 'JSON required' } })
+        return
+      }
+      const origin = req.headers.origin
+      if (origin !== undefined) {
+        let protocol: string
+        try {
+          protocol = new URL(origin).protocol
+        } catch {
+          protocol = ''
+        }
+        if (protocol !== 'chrome-extension:' && protocol !== 'moz-extension:') {
+          sendJson(res, 403, { ok: false, error: { code: 'invalid-request', message: 'Origin not allowed' } })
+          return
+        }
       }
       try {
         const request = requestSchema.parse(await bodyOf(req))
@@ -136,5 +157,4 @@ export function apply(ctx: Context): void {
   }))
 }
 
-export default apply
-
+export default { name, inject, apply }

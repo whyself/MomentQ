@@ -134,5 +134,24 @@ describe('MomentQ state persistence', () => {
     })).rejects.toThrow(/invalid MomentQ state/)
     await expect(readState(directory)).resolves.toEqual(initial.state)
   })
-})
 
+  it('rejects Session ids that do not belong to the recorded identity and generation', async () => {
+    const directory = await freshDirectory()
+    const initial = await ensureState({
+      directory,
+      identity,
+      metadata,
+      defaultInstructions: 'Default',
+      maxInstructionsLength: 4000,
+    })
+    const corrupted = {
+      ...initial.state,
+      session: {
+        ...initial.state.session,
+        active: { ...initial.state.session.active!, id: 'momentq-someone-else-g0' },
+      },
+    }
+    await writeFile(join(directory, 'state.json'), JSON.stringify(corrupted), 'utf8')
+    await expect(readState(directory)).rejects.toThrow(/Session id does not match generation/)
+  })
+})

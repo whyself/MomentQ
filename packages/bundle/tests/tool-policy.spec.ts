@@ -116,15 +116,24 @@ describe('MomentQ transcript tool policy', () => {
     ])
   })
 
-  it('fails setup without a Session cwd', async () => {
+  it('fails execution without a Session cwd', async () => {
     const ctx = new Context()
     await ctx.plugin(SystemPrompt, {})
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(LocalFileSystem, { cwd: process.cwd() })
     ctx.tools.register(tool('grep', {}))
     ctx.tools.register(tool('read', {}))
-    Object.defineProperty(ctx, 'agent', { value: { id: 'x', session: { header: {} } }, configurable: true })
-    await expect(ctx.plugin(TranscriptToolPolicy)).rejects.toThrow(/cwd/)
+    const agent = { id: 'x' as SessionId, session: { header: {} } } as Agent
+    const scope = createScope(ctx, agent)
+    await scope.ctx.plugin(TranscriptToolPolicy)
+    const result = await ctx.tools.execute({
+      signal,
+      callId: CallId('call-missing-cwd'),
+      name: 'read',
+      arguments: {},
+      agent,
+    })
+    expect(result.isError).toBe(true)
+    expect(result.content[0]).toMatchObject({ type: 'text', text: expect.stringContaining('Session cwd') })
   })
 })
-

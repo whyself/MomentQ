@@ -54,19 +54,21 @@ function shadow(
   })
 }
 
-/** Restrict one Agent to native grep/read calls over its exact transcript. */
-export async function apply(ctx: Context): Promise<void> {
-  const agent = ctx.agent
-  if (agent === undefined) throw new Error('momentq tool policy requires an Agent scope')
+async function transcriptPath(ctx: Context, exec: ToolRunContext): Promise<string> {
+  const agent = exec.agent
+  if (agent === undefined) throw new Error('momentq tool policy requires an Agent execution')
   const cwd = agent.session.header.cwd
   if (cwd === undefined) throw new Error('momentq tool policy requires a Session cwd')
-
-  const root = await ctx.fs.resolve(cwd)
-  const transcript = await ctx.fs.resolve('transcript.jsonl', { cwd })
+  const root = await ctx.fs.resolve(cwd, { signal: exec.signal })
+  const transcript = await ctx.fs.resolve('transcript.jsonl', { cwd, signal: exec.signal })
   if (!ctx.fs.contains(root, transcript)) {
     throw new Error('MomentQ transcript path escapes the Session cwd')
   }
-  const transcriptPath = ctx.fs.processPath(transcript)
+  return ctx.fs.processPath(transcript)
+}
+
+/** Restrict every Agent joined to this Preset to its own exact transcript. */
+export function apply(ctx: Context): void {
   const grep = requiredTool(ctx, 'grep')
   const read = requiredTool(ctx, 'read')
 
@@ -76,9 +78,9 @@ export async function apply(ctx: Context): Promise<void> {
     grep,
     'Search the current video or live transcript. The transcript file cannot be changed.',
     withoutParameter(grep.parameters, 'path'),
-    (args) => {
+    async (args, exec) => {
       assertAbsent(args, 'path')
-      return { ...args as Record<string, unknown>, path: transcriptPath }
+      return { ...args as Record<string, unknown>, path: await transcriptPath(ctx, exec) }
     },
   )
   shadow(
@@ -86,9 +88,9 @@ export async function apply(ctx: Context): Promise<void> {
     read,
     'Read a line window from the current video or live transcript. The transcript file cannot be changed.',
     withoutParameter(read.parameters, 'file_path'),
-    (args) => {
+    async (args, exec) => {
       assertAbsent(args, 'file_path')
-      return { ...args as Record<string, unknown>, file_path: transcriptPath }
+      return { ...args as Record<string, unknown>, file_path: await transcriptPath(ctx, exec) }
     },
   )
 
@@ -99,5 +101,4 @@ export async function apply(ctx: Context): Promise<void> {
   }
 }
 
-export default apply
-
+export default { name, inject, apply }

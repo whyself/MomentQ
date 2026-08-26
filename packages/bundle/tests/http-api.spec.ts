@@ -59,6 +59,17 @@ describe('MomentQ loopback HTTP API', () => {
   it('rejects non-POST, malformed, unknown and oversized requests', async () => {
     const h = await harness()
     expect((await call(h.endpoint, {}, 'GET')).status).toBe(405)
+    expect((await fetch(h.endpoint, { method: 'POST', body: JSON.stringify({ method: 'getContent', params: { identity } }) })).status).toBe(415)
+    expect((await fetch(h.endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/jsonp' },
+      body: JSON.stringify({ method: 'getContent', params: { identity } }),
+    })).status).toBe(415)
+    expect((await fetch(h.endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'https://evil.example' },
+      body: JSON.stringify({ method: 'deleteContent', params: { identity } }),
+    })).status).toBe(403)
     expect((await call(h.endpoint, { method: 'unknown', params: {} })).status).toBe(400)
     expect((await call(h.endpoint, {
       method: 'getContent', params: { identity, cwd: 'D:\\secret', sessionId: 'x', presetId: 'x' },
@@ -91,4 +102,3 @@ describe('MomentQ loopback HTTP API', () => {
     await expect(ctx.plugin(MomentQHttpApi)).rejects.toThrow(/loopback-only/)
   })
 })
-

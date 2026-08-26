@@ -1,14 +1,21 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { Context } from '@deepseek-ai/cordis'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apply, modelMetadata } from '../src/session-context.ts'
+import { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import { createScope, scopeOf } from '@deepseek-ai/dsh-scope'
+import type { SessionId } from '@deepseek-ai/dsh-session'
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+import { afterEach, describe, expect, it } from 'vitest'
+import * as SessionContext from '../src/session-context.ts'
+import { modelMetadata } from '../src/session-context.ts'
 import { ensureState, readState, writeState } from '../src/state.ts'
 
 const roots: string[] = []
+const contexts: Context[] = []
 
 afterEach(async () => {
+  await Promise.all(contexts.splice(0).map(ctx => ctx.fiber.dispose()))
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })))
 })
 
@@ -34,30 +41,29 @@ async function fixture() {
   return { directory, state: result.state, active: result.state.session.active! }
 }
 
-function fakeContext(directory: string, sessionId: string) {
-  const section = vi.fn()
-  return {
-    section,
-    ctx: {
-      agent: { id: sessionId, session: { header: { cwd: directory } } },
-      systemPrompt: { section },
-    } as unknown as Context,
-  }
+async function assemble(directory: string | undefined, sessionId: string) {
+  const ctx = new Context()
+  contexts.push(ctx)
+  await ctx.plugin(SystemPrompt, {})
+  const agent = {
+    id: sessionId as SessionId,
+    session: { header: directory === undefined ? {} : { cwd: directory } },
+  } as Agent
+  const scope = createScope(ctx, agent)
+  await scope.ctx.plugin(SessionContext)
+  return await ctx.systemPrompt.assemble({ scope: scopeOf(scope.ctx)!, agent })
 }
 
 describe('MomentQ Session context', () => {
   it('registers frozen instructions and safe metadata sections', async () => {
     const { directory, active } = await fixture()
-    const h = fakeContext(directory, active.id)
-    await apply(h.ctx)
-
-    expect(h.section).toHaveBeenNthCalledWith(1, {
+    const assembly = await assemble(directory, active.id)
+    expect(assembly.sections.find(section => section.name === 'momentq:session-instructions')).toEqual({
       name: 'momentq:session-instructions',
-      order: 10,
       text: '<session-instructions>\nSession instruction\n</session-instructions>',
     })
-    const metadataSection = h.section.mock.calls[1]?.[0]
-    expect(metadataSection).toMatchObject({ name: 'momentq:content-metadata', order: 20 })
+    const metadataSection = assembly.sections.find(section => section.name === 'momentq:content-metadata')!
+    expect(metadataSection).toMatchObject({ name: 'momentq:content-metadata' })
     expect(metadataSection.text).toContain('"title": "Title with newline"')
     expect(metadataSection.text).toContain('"creator": "Uploader Name"')
     expect(metadataSection.text).toContain('"title": "Part One"')
@@ -84,17 +90,15 @@ describe('MomentQ Session context', () => {
         retired: [{ ...active, generation: 0, disposition: 'archived', retiredAt: new Date().toISOString() }],
       },
     })
-    const h = fakeContext(directory, active.id)
-    await apply(h.ctx)
-    expect(h.section.mock.calls[0]?.[0].text).toContain('Session instruction')
+    const assembly = await assemble(directory, active.id)
+    expect(assembly.sections.find(section => section.name === 'momentq:session-instructions')?.text)
+      .toContain('Session instruction')
   })
 
   it('fails when cwd, state or matching Session ownership is absent', async () => {
     const { directory } = await fixture()
-    await expect(apply({ agent: { id: 'x', session: { header: {} } } } as unknown as Context))
-      .rejects.toThrow(/cwd/)
-    await expect(apply(fakeContext(directory, 'not-owned').ctx)).rejects.toThrow(/not recorded/)
+    await expect(assemble(undefined, 'x')).rejects.toThrow(/cwd/)
+    await expect(assemble(directory, 'not-owned')).rejects.toThrow(/not recorded/)
     await expect(readState(directory)).resolves.toBeDefined()
   })
 })
-

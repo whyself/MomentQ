@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -117,6 +117,17 @@ describe.sequential('MomentQ Host service', () => {
     expect((await readState(first.cwd)).session.active?.instructions).toBe('Custom')
   })
 
+  it('serializes different operations instead of returning the wrong operation result', async () => {
+    const h = await harness()
+    const [ensured, deleted] = await Promise.all([
+      h.ctx.momentq.ensureContent(request),
+      h.ctx.momentq.deleteContent(request.identity),
+    ])
+    expect(ensured).toMatchObject({ contentKey: 'bilibili:vod:BV1xx:42', created: true })
+    expect(deleted).toEqual({ deleted: true })
+    await expect(stat(ensured.cwd)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('resumes one matching persisted Session and rejects a cwd conflict', async () => {
     const h = await harness()
     const initial = await h.ctx.momentq.ensureContent(request)
@@ -158,6 +169,22 @@ describe.sequential('MomentQ Host service', () => {
     await expect(h.ctx.momentq.deleteContent(request.identity)).resolves.toEqual({ deleted: true })
     await expect(stat(initial.cwd)).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(stat(dirname(artifact))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('rejects a Session directory redirected to another directory inside DSH_HOME', async () => {
+    const h = await harness()
+    const initial = await h.ctx.momentq.ensureContent(request)
+    const sessionsRoot = join(h.root, 'dsh-home', 'sessions')
+    const victim = join(sessionsRoot, 'project', 'victim')
+    const victimArtifact = join(victim, 'session.jsonl.zstd')
+    const linkedDirectory = join(sessionsRoot, 'project', String(initial.sessionId))
+    await mkdir(victim, { recursive: true })
+    await writeFile(victimArtifact, 'must survive')
+    await symlink(victim, linkedDirectory, process.platform === 'win32' ? 'junction' : 'dir')
+    h.locations.set(String(initial.sessionId), join(linkedDirectory, 'session.jsonl.zstd'))
+
+    await expect(h.ctx.momentq.deleteSession(request.identity)).rejects.toThrow(/filesystem link/)
+    await expect(readFile(victimArtifact, 'utf8')).resolves.toBe('must survive')
   })
 
   it('fails fast when DSH_HOME is outside the configured root', async () => {

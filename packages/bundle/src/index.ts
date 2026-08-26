@@ -1,7 +1,7 @@
 /** MomentQ Host service: content state, DSH Session routing, and lifecycle management. */
 
-import { mkdir, rm } from 'node:fs/promises'
-import { dirname, isAbsolute, relative, resolve } from 'node:path'
+import { mkdir, realpath, rm } from 'node:fs/promises'
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
@@ -19,6 +19,7 @@ import {
 } from './content.ts'
 import {
   ensureState,
+  MomentQStateNotFoundError,
   readState,
   resolveSessionInstructions,
   writeState,
@@ -81,6 +82,21 @@ function strictChild(parent: string, target: string, label: string): string {
   return candidate
 }
 
+function isNodeError(error: unknown, code: string): boolean {
+  return error instanceof Error && 'code' in error && error.code === code
+}
+
+async function canonicalStrictChild(parent: string, target: string, label: string): Promise<string> {
+  const lexicalTarget = strictChild(parent, target, label)
+  const [canonicalParent, canonicalTarget] = await Promise.all([realpath(parent), realpath(target)])
+  const physicalTarget = strictChild(canonicalParent, canonicalTarget, label)
+  const comparable = (value: string): string => process.platform === 'win32' ? value.toLowerCase() : value
+  if (comparable(lexicalTarget) !== comparable(physicalTarget)) {
+    throw new Error(`${label} is redirected through a filesystem link`)
+  }
+  return physicalTarget
+}
+
 function sameSessionRecord(record: MomentQSessionRecord, header: SessionHeader, cwd: string): void {
   if (header.cwd !== cwd) {
     throw new Error(`Session "${record.id}" cwd conflicts with its MomentQ content directory`)
@@ -100,15 +116,18 @@ export class MomentQService extends Service {
     maxInstructionsLength: z.number().default(4000),
   })
 
-  readonly root: string
-  readonly contentRoot: string
-  readonly dshHome: string
-  readonly dshSessionsRoot: string
+  root: string
+  contentRoot: string
+  dshHome: string
+  dshSessionsRoot: string
   readonly presetRoot = fileURLToPath(new URL('../presets/', import.meta.url))
 
   private readonly defaultInstructions: string
   private readonly maxInstructionsLength: number
-  private readonly operations = new Map<string, Promise<unknown>>()
+  private readonly operations = new Map<string, {
+    tail: Promise<void>
+    pendingEnsure?: Promise<unknown> | undefined
+  }>()
   private readonly handles = new Map<string, AgentHandle>()
 
   constructor(ctx: Context, config: Config) {
@@ -121,9 +140,6 @@ export class MomentQService extends Service {
     const configuredDshHome = process.env.DSH_HOME
     if (configuredDshHome === undefined || configuredDshHome.trim() === '') {
       throw new Error('DSH_HOME must be set to <MOMENTQ_DATA_ROOT>/dsh-home')
-    }
-    if (resolve(configuredDshHome) !== this.dshHome) {
-      throw new Error(`DSH_HOME must equal "${this.dshHome}"`)
     }
     this.defaultInstructions = (config.defaultInstructions ?? DEFAULT_INSTRUCTIONS).trim()
     this.maxInstructionsLength = config.maxInstructionsLength ?? 4000
@@ -138,12 +154,36 @@ export class MomentQService extends Service {
       mkdir(this.contentRoot, { recursive: true }),
       mkdir(this.dshSessionsRoot, { recursive: true }),
     ])
+    const configuredDshHome = process.env.DSH_HOME!
+    const [root, contentRoot, dshHome, dshSessionsRoot] = await Promise.all([
+      realpath(this.root), realpath(this.contentRoot), realpath(this.dshHome), realpath(this.dshSessionsRoot),
+    ])
+    let configured: string
+    try {
+      configured = await realpath(configuredDshHome)
+    } catch (error) {
+      throw new Error('DSH_HOME must name the configured MomentQ dsh-home directory', { cause: error })
+    }
+    if (configured !== dshHome) throw new Error(`DSH_HOME must equal "${this.dshHome}" after canonicalization`)
+    strictChild(root, contentRoot, 'MomentQ content root')
+    strictChild(root, dshHome, 'DSH home')
+    strictChild(dshHome, dshSessionsRoot, 'DSH sessions root')
+    this.root = root
+    this.contentRoot = contentRoot
+    this.dshHome = dshHome
+    this.dshSessionsRoot = dshSessionsRoot
   }
 
   /** Create or resume the one active Session for a content identity. */
   async ensureContent(request: EnsureContentRequest): Promise<EnsureContentResult> {
     return await this.forContent(request.identity, async () => {
       const cwd = contentDirectory(this.root, request.identity)
+      try {
+        const existing = await readState(cwd)
+        if (existing.session.active !== null) await this.validateStoredSession(existing.session.active, cwd)
+      } catch (error) {
+        if (!(error instanceof MomentQStateNotFoundError)) throw error
+      }
       const ensured = await ensureState({
         directory: cwd,
         identity: request.identity,
@@ -168,7 +208,7 @@ export class MomentQService extends Service {
         cwd,
         created: ensured.created || activated,
       }
-    })
+    }, true)
   }
 
   /** Read one existing content state. */
@@ -222,17 +262,18 @@ export class MomentQService extends Service {
         activeHeader = agent.session.header
         await this.stopOwnedAgent(agent)
       }
-      const ids = [
-        ...(state.session.active === null ? [] : [state.session.active.id]),
-        ...state.session.retired.filter(item => item.disposition !== 'deleted').map(item => item.id),
+      const records: MomentQSessionRecord[] = [
+        ...(state.session.active === null ? [] : [state.session.active]),
+        ...state.session.retired.filter(item => item.disposition !== 'deleted'),
       ]
-      for (const id of ids) {
+      for (const record of records) {
         await this.removeSessionArtifact(
-          SessionId(id),
-          activeHeader?.id === SessionId(id) ? activeHeader : undefined,
+          record,
+          cwd,
+          activeHeader?.id === SessionId(record.id) ? activeHeader : undefined,
         )
       }
-      const target = strictChild(this.contentRoot, cwd, 'content directory')
+      const target = await canonicalStrictChild(this.contentRoot, cwd, 'content directory')
       await rm(target, { recursive: true, force: true })
       return { deleted: true }
     })
@@ -253,7 +294,7 @@ export class MomentQService extends Service {
         await this.ctx.workspaceRegistry.archiveSession(SessionId(active.id))
       }
       await this.stopOwnedAgent(agent)
-      if (disposition === 'deleted') await this.removeSessionArtifact(SessionId(active.id), agent.session.header)
+      if (disposition === 'deleted') await this.removeSessionArtifact(active, cwd, agent.session.header)
 
       const generation = state.session.generation + 1
       const replacement: MomentQSessionRecord = {
@@ -365,6 +406,18 @@ export class MomentQService extends Service {
     return handle.agent
   }
 
+  private async validateStoredSession(record: MomentQSessionRecord, cwd: string): Promise<void> {
+    const id = SessionId(record.id)
+    const live = this.ctx.agents.get(id)
+    if (live !== undefined) {
+      sameSessionRecord(record, live.session.header, cwd)
+      return
+    }
+    const stored = (await this.ctx.sessionPersistence.list()).find(header => header.id === id)
+    if (stored === undefined) return
+    sameSessionRecord(record, (await this.ctx.sessionPersistence.inspect(id)).meta, cwd)
+  }
+
   private async stopOwnedAgent(agent: Agent): Promise<void> {
     const id = String(agent.id)
     const handle = this.handles.get(id)
@@ -378,27 +431,57 @@ export class MomentQService extends Service {
     this.handles.delete(id)
   }
 
-  private async removeSessionArtifact(id: DshSessionId, knownHeader?: SessionHeader): Promise<void> {
+  private async removeSessionArtifact(
+    record: MomentQSessionRecord,
+    cwd: string,
+    knownHeader?: SessionHeader,
+  ): Promise<void> {
+    const id = SessionId(record.id)
     let header = knownHeader
     if (header === undefined) {
       header = (await this.ctx.sessionPersistence.list()).find(item => item.id === id)
     }
     if (header === undefined) return
+    sameSessionRecord(record, header, cwd)
     const location = this.ctx.sessionPersistence.locate(header)
     if (location === undefined) return
     if (location.kind !== 'jsonl') throw new Error(`cannot delete unsupported Session artifact kind "${location.kind}"`)
-    const sessionDirectory = strictChild(this.dshSessionsRoot, dirname(location.path), 'DSH Session directory')
+    const lexicalDirectory = strictChild(this.dshSessionsRoot, dirname(location.path), 'DSH Session directory')
+    const segments = relative(this.dshSessionsRoot, lexicalDirectory).split(sep).filter(Boolean)
+    if (segments.length < 2) throw new Error('DSH Session directory is not session-owned')
+    let sessionDirectory: string
+    try {
+      sessionDirectory = await canonicalStrictChild(this.dshSessionsRoot, lexicalDirectory, 'DSH Session directory')
+    } catch (error) {
+      if (isNodeError(error, 'ENOENT')) return
+      throw error
+    }
     await rm(sessionDirectory, { recursive: true, force: true })
   }
 
-  private async forContent<T>(identity: ContentIdentity, operation: () => Promise<T>): Promise<T> {
+  private async forContent<T>(
+    identity: ContentIdentity,
+    operation: () => Promise<T>,
+    coalesceEnsure = false,
+  ): Promise<T> {
     const key = contentKey(identity)
-    const existing = this.operations.get(key) as Promise<T> | undefined
-    if (existing !== undefined) return await existing
-    const current = operation().finally(() => {
-      if (this.operations.get(key) === current) this.operations.delete(key)
+    let queue = this.operations.get(key)
+    if (coalesceEnsure && queue?.pendingEnsure !== undefined) return await queue.pendingEnsure as T
+    if (queue === undefined) {
+      queue = { tail: Promise.resolve() }
+      this.operations.set(key, queue)
+    }
+    if (!coalesceEnsure) queue.pendingEnsure = undefined
+    const current = queue.tail.catch(() => {}).then(operation)
+    queue.tail = current.then(() => undefined, () => undefined)
+    if (coalesceEnsure) queue.pendingEnsure = current
+    const tail = queue.tail
+    void tail.finally(() => {
+      const active = this.operations.get(key)
+      if (active?.tail !== tail) return
+      if (active.pendingEnsure === current) active.pendingEnsure = undefined
+      if (active.pendingEnsure === undefined) this.operations.delete(key)
     })
-    this.operations.set(key, current)
     return await current
   }
 }

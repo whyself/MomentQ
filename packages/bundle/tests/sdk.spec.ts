@@ -4,6 +4,10 @@ import { MomentQClient, MomentQClientError } from '../src/sdk.ts'
 const identity = { kind: 'vod', bvid: 'BV1xx', cid: '42' } as const
 
 describe('MomentQ browser SDK', () => {
+  it('rejects non-loopback and credential-confused base URLs', () => {
+    expect(() => new MomentQClient({ baseUrl: 'http://127.0.0.1:3080@evil.example' })).toThrow(/loopback/)
+    expect(() => new MomentQClient({ baseUrl: 'https://example.com' })).toThrow(/loopback/)
+  })
   it('sends typed calls to the fixed API path', async () => {
     let seenInit: RequestInit | undefined
     const fetcher: typeof globalThis.fetch = vi.fn(async (_input, init) => {
@@ -37,7 +41,7 @@ describe('MomentQ browser SDK', () => {
       methods.push((JSON.parse(String(init?.body)) as { method: string }).method)
       return new Response(JSON.stringify({ ok: true, value: { deleted: true } }), { status: 200 })
     })
-    const client = new MomentQClient({ baseUrl: 'http://localhost:3080', fetch: fetcher })
+    const client = new MomentQClient({ baseUrl: 'http://127.0.0.1:3080', fetch: fetcher })
     await client.getContent(identity)
     await client.archiveSession(identity)
     await client.resetSession(identity, 'new instructions')
@@ -65,9 +69,17 @@ describe('MomentQ browser SDK', () => {
       fetch: async () => new Response('not json', { status: 500 }),
     })
     await expect(invalid.getContent(identity)).rejects.toMatchObject({ code: 'internal', status: 500 })
+
+    const nullError = new MomentQClient({
+      baseUrl: 'http://127.0.0.1:3080',
+      fetch: async () => new Response(JSON.stringify({ ok: false, error: null }), { status: 500 }),
+    })
+    await expect(nullError.getContent(identity)).rejects.toMatchObject({
+      name: 'MomentQClientError', code: 'internal', status: 500,
+    } satisfies Partial<MomentQClientError>)
   })
 
   it('rejects a non-HTTP base URL', () => {
-    expect(() => new MomentQClient({ baseUrl: 'file:///tmp/momentq' })).toThrow(/HTTP URL/)
+    expect(() => new MomentQClient({ baseUrl: 'file:///tmp/momentq' })).toThrow(/loopback HTTP URL/)
   })
 })
