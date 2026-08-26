@@ -12,14 +12,14 @@ export type ContentIdentity =
 /** Display metadata captured from the Bilibili page. */
 export interface ContentMetadata {
   title: string
-  description?: string
-  creator: { id?: string; name: string }
-  part?: { number: number; title?: string }
-  durationSeconds?: number
-  publishedAt?: string
-  tags?: string[]
-  area?: string
-  endedAt?: string
+  description?: string | undefined
+  creator: { id?: string | undefined; name: string }
+  part?: { number: number; title?: string | undefined } | undefined
+  durationSeconds?: number | undefined
+  publishedAt?: string | undefined
+  tags?: string[] | undefined
+  area?: string | undefined
+  endedAt?: string | undefined
 }
 
 const BVID = /^BV[0-9A-Za-z]+$/

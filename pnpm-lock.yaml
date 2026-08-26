@@ -78,6 +78,9 @@ importers:
       '@deepseek-ai/dsh-workspace':
         specifier: 0.1.1-rc.2
         version: 0.1.1-rc.2(ca1aef6913f66bb64a14405a8170db89)
+      '@types/write-file-atomic':
+        specifier: ^4.0.3
+        version: 4.0.3
 
 packages:
 
@@ -581,6 +584,9 @@ packages:
 
   '@types/node@24.13.3':
     resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
+
+  '@types/write-file-atomic@4.0.3':
+    resolution: {integrity: sha512-qdo+vZRchyJIHNeuI1nrpsLw+hnkgqP/8mlaN6Wle/NKhydHmUN9l4p3ZE8yP90AJNJW4uB8HQhedb4f1vNayQ==}
 
   '@vitest/expect@4.1.11':
     resolution: {integrity: sha512-VX2x5vNJXET47KAFzwERI+KRMtTTCSWTfSMKsW7JsUsXV4psq++e3DvZpuTDOpHcxytiDs6p2nhVb2tVDiiUYw==}
@@ -1652,6 +1658,10 @@ snapshots:
   '@types/node@24.13.3':
     dependencies:
       undici-types: 7.18.2
+
+  '@types/write-file-atomic@4.0.3':
+    dependencies:
+      '@types/node': 24.13.3
 
   '@vitest/expect@4.1.11':
     dependencies:

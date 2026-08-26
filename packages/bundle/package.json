@@ -79,7 +79,7 @@
     "@deepseek-ai/dsh-tool-fs": "0.1.1-rc.2",
     "@deepseek-ai/dsh-tool-fs-search": "0.1.1-rc.2",
     "@deepseek-ai/dsh-tools": "0.1.1-rc.2",
-    "@deepseek-ai/dsh-workspace": "0.1.1-rc.2"
+    "@deepseek-ai/dsh-workspace": "0.1.1-rc.2",
+    "@types/write-file-atomic": "^4.0.3"
   }
 }
-
