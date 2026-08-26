@@ -4,7 +4,7 @@
 
 **Goal:** Build an installable DeepSeek Harness Bundle that gives every Bilibili video part or live occurrence one durable content directory, one durable DSH Session, one fixed MomentQ Agent Preset, session-frozen instructions, metadata-aware prompting, and only transcript-scoped `grep` and `read` tools.
 
-**Architecture:** `MOMENTQ_DATA_ROOT` is the single operator-owned root. MomentQ stores content state below `<root>/content`, while DSH stores its native Session and settings data below `<root>/dsh-home` through `DSH_HOME`; Docker or a native runtime may bind/package the root but never owns the only copy. The DSH runtime is isolated under `dsh/`, with the Bundle at `dsh/packages/bundle`; application packages such as the browser extension remain under the root `packages/`. A Host service creates or reuses content state and DSH Sessions, while the fixed `momentq` Preset mounts scoped prompt and tool-policy plugins that read the Session `cwd` and never accept a caller-supplied filesystem path.
+**Architecture:** `MOMENTQ_DATA_ROOT` is the single operator-owned root. MomentQ stores content state below `<root>/content`, while DSH stores its native Session and settings data below `<root>/dsh-home` through `DSH_HOME`; Docker or a native runtime may bind/package the root but never owns the only copy. The DSH runtime is isolated under `dsh/`, with the Bundle at `dsh/packages/bundle`; the browser extension, companion service, and shared protocol are separate top-level products at `extension/`, `companion/`, and `shared/`. A Host service creates or reuses content state and DSH Sessions, while the fixed `momentq` Preset mounts scoped prompt and tool-policy plugins that read the Session `cwd` and never accept a caller-supplied filesystem path.
 
 **Tech Stack:** TypeScript 6, Node.js 22.19+, pnpm 11, Cordis, DeepSeek Harness `0.1.1-rc.2`, Zod 4, Schemastery, Vitest 4, tsdown.
 
@@ -77,13 +77,12 @@ MomentQ/
 │  ├─ packages/
 │  │  └─ bundle/                       # installable MomentQ DSH Bundle
 │  └─ docker/                          # future runtime image and entrypoint
-├─ docs/
-│  ├─ project-plan.md                 # product decisions, updated data-root wording
-│  └─ superpowers/plans/...
-└─ packages/
-   ├─ extension/                       # future Chrome/Edge extension
-   ├─ shared/                          # future shared protocol/types
-   └─ companion/                       # future local companion and ASR
+├─ extension/                           # future Chrome/Edge extension
+├─ shared/                              # future shared protocol/types
+├─ companion/                           # future local companion and ASR
+└─ docs/
+   ├─ project-plan.md                  # product decisions, updated data-root wording
+   └─ superpowers/plans/...
 
 dsh/packages/bundle/
    ├─ package.json                    # published DSH Bundle manifest
@@ -166,7 +165,10 @@ data/
 
 ```yaml
 packages:
-  - packages/*
+  - dsh/packages/*
+  - extension
+  - shared
+  - companion
 ```
 
 - [ ] **Step 3: Add strict TypeScript configuration**

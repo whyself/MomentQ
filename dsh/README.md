@@ -6,7 +6,7 @@ This directory owns the DSH execution layer for MomentQ.
 - `packages/runtime/` will pin and launch the native DSH framework for local users.
 - `docker/` will contain the reproducible container image and entrypoint.
 
-Application components such as the browser extension stay in the repository-level `packages/` directory. The runtime must preserve one logical data root:
+Application components are separate repository-level products: `../extension/`, `../shared/`, and `../companion/`. The runtime must preserve one logical data root:
 
 ```text
 <MOMENTQ_DATA_ROOT>/
