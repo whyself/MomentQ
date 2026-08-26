@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 const packageRoot = fileURLToPath(new URL('../', import.meta.url))
 const preset = await readFile(`${packageRoot}/presets/momentq/preset.yml`, 'utf8')
 const composition = await readFile(`${packageRoot}/presets/momentq/agent.cordis.yml`, 'utf8')
-const patch = await readFile(`${packageRoot}/cordis.patch.yml`, 'utf8')
+const patch = (await readFile(`${packageRoot}/cordis.patch.yml`, 'utf8')).replace(/\r\n/g, '\n')
 const manifest = JSON.parse(await readFile(`${packageRoot}/package.json`, 'utf8')) as Record<string, any>
 
 describe('MomentQ Bundle composition', () => {

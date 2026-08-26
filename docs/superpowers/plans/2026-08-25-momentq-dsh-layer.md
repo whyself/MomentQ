@@ -4,7 +4,7 @@
 
 **Goal:** Build an installable DeepSeek Harness Bundle that gives every Bilibili video part or live occurrence one durable content directory, one durable DSH Session, one fixed MomentQ Agent Preset, session-frozen instructions, metadata-aware prompting, and only transcript-scoped `grep` and `read` tools.
 
-**Architecture:** `MOMENTQ_DATA_ROOT` is the single operator-owned root. MomentQ stores content state below `<root>/content`, while DSH stores its native Session and settings data below `<root>/dsh-home` through `DSH_HOME`; Docker may bind-mount the root but never owns the only copy. A Host service creates or reuses content state and DSH Sessions, while the fixed `momentq` Preset mounts scoped prompt and tool-policy plugins that read the Session `cwd` and never accept a caller-supplied filesystem path.
+**Architecture:** `MOMENTQ_DATA_ROOT` is the single operator-owned root. MomentQ stores content state below `<root>/content`, while DSH stores its native Session and settings data below `<root>/dsh-home` through `DSH_HOME`; Docker or a native runtime may bind/package the root but never owns the only copy. The DSH runtime is isolated under `dsh/`, with the Bundle at `dsh/packages/bundle`; application packages such as the browser extension remain under the root `packages/`. A Host service creates or reuses content state and DSH Sessions, while the fixed `momentq` Preset mounts scoped prompt and tool-policy plugins that read the Session `cwd` and never accept a caller-supplied filesystem path.
 
 **Tech Stack:** TypeScript 6, Node.js 22.19+, pnpm 11, Cordis, DeepSeek Harness `0.1.1-rc.2`, Zod 4, Schemastery, Vitest 4, tsdown.
 
@@ -12,7 +12,7 @@
 
 ## Scope decisions
 
-- The DSH layer is implemented as a standalone plugin repository; upstream DSH source is not modified.
+- The DSH layer is implemented as a standalone runtime workspace under `dsh/`; upstream DSH source is not modified.
 - One content identity owns one directory and one DSH Session.
 - A recording identity is `bilibili:vod:{bvid}:{cid}`.
 - A live occurrence identity is `bilibili:live:{canonicalRoomId}:{liveStartTime}`.
@@ -24,7 +24,7 @@
 - Model-facing file tools are exactly `grep` and `read`. Both are hard-wired to `cwd/transcript.jsonl`; `glob` is not installed in the visible tool set.
 - Video metadata, subtitle text, and frame text are untrusted data, not instructions.
 - The MomentQ Host service is the sole writer of `state.json`. Subtitle import and ASR append finalized rows to `transcript.jsonl` and request state changes through the future Host API; they never rewrite `state.json` independently.
-- The first Bundle exposes a loopback-only `/momentq/api` HTTP route and a browser-safe `momentq-dsh-bundle/sdk` client. Browser UI, ASR, Native Messaging and a Docker image remain separate follow-up plans.
+- The first Bundle exposes a loopback-only `/momentq/api` HTTP route and a browser-safe `momentq-dsh-bundle/sdk` client. The DSH runtime packaging (native framework and Docker image) is a separate task from the Bundle; browser UI, ASR and Native Messaging remain separate follow-up plans.
 - `resetSession` archives the current conversation and creates a fresh Session over the same content directory.
 - `deleteSession` stops the current Agent, removes its DSH JSONL session-owned directory, preserves content files, and creates a fresh Session.
 - `deleteContent` stops and removes every MomentQ-owned DSH Session recorded by that content state, then removes the exact content directory. Both destructive paths reject any resolved target outside `MOMENTQ_DATA_ROOT` or `DSH_HOME`.
@@ -45,7 +45,7 @@
    └─ ...DSH-owned Session, settings, credential and storage files...
 ```
 
-Native Windows launch:
+Current developer launch (until Task 10 packages the native runtime):
 
 ```powershell
 $momentqRoot = 'D:\MomentQData'
@@ -54,7 +54,7 @@ $env:DSH_HOME = Join-Path $momentqRoot 'dsh-home'
 dsh --profile web --no-open
 ```
 
-Future Docker launch must preserve the same logical root:
+The Task 10 Docker runtime must preserve the same logical root:
 
 ```powershell
 docker run --rm `
@@ -72,10 +72,20 @@ MomentQ/
 ├─ package.json                       # workspace scripts and pinned toolchain
 ├─ pnpm-workspace.yaml                # package discovery
 ├─ tsconfig.base.json                 # strict shared TypeScript settings
+├─ dsh/
+│  ├─ README.md                       # DSH runtime boundary and launch contract
+│  ├─ packages/
+│  │  └─ bundle/                       # installable MomentQ DSH Bundle
+│  └─ docker/                          # future runtime image and entrypoint
 ├─ docs/
 │  ├─ project-plan.md                 # product decisions, updated data-root wording
 │  └─ superpowers/plans/...
-└─ packages/bundle/
+└─ packages/
+   ├─ extension/                       # future Chrome/Edge extension
+   ├─ shared/                          # future shared protocol/types
+   └─ companion/                       # future local companion and ASR
+
+dsh/packages/bundle/
    ├─ package.json                    # published DSH Bundle manifest
    ├─ tsconfig.json                   # source/tests typecheck
    ├─ tsdown.config.ts                # Host and Preset-plugin entry bundling
@@ -110,9 +120,9 @@ MomentQ/
 - Create: `package.json`
 - Create: `pnpm-workspace.yaml`
 - Create: `tsconfig.base.json`
-- Create: `packages/bundle/package.json`
-- Create: `packages/bundle/tsconfig.json`
-- Create: `packages/bundle/tsdown.config.ts`
+- Create: `dsh/packages/bundle/package.json`
+- Create: `dsh/packages/bundle/tsconfig.json`
+- Create: `dsh/packages/bundle/tsdown.config.ts`
 
 - [ ] **Step 1: Add repository ignores**
 
@@ -256,15 +266,15 @@ Expected: TypeScript reports only missing source entries until Task 2 adds them;
 - [ ] **Step 6: Commit the scaffold**
 
 ```powershell
-git add .gitignore package.json pnpm-workspace.yaml tsconfig.base.json packages/bundle
+git add .gitignore package.json pnpm-workspace.yaml tsconfig.base.json dsh/packages/bundle
 git commit -m "chore: scaffold MomentQ DSH bundle"
 ```
 
 ### Task 2: Define content identities, metadata and deterministic paths
 
 **Files:**
-- Create: `packages/bundle/src/content.ts`
-- Test: `packages/bundle/tests/content.spec.ts`
+- Create: `dsh/packages/bundle/src/content.ts`
+- Test: `dsh/packages/bundle/tests/content.spec.ts`
 
 - [ ] **Step 1: Write failing path and validation tests**
 
@@ -320,15 +330,15 @@ Expected: all identity, Windows-safe live path and containment cases pass.
 - [ ] **Step 4: Commit content identity support**
 
 ```powershell
-git add packages/bundle/src/content.ts packages/bundle/tests/content.spec.ts
+git add dsh/packages/bundle/src/content.ts dsh/packages/bundle/tests/content.spec.ts
 git commit -m "feat: define MomentQ content identities"
 ```
 
 ### Task 3: Add versioned state and atomic file initialization
 
 **Files:**
-- Create: `packages/bundle/src/state.ts`
-- Test: `packages/bundle/tests/state.spec.ts`
+- Create: `dsh/packages/bundle/src/state.ts`
+- Test: `dsh/packages/bundle/tests/state.spec.ts`
 
 - [ ] **Step 1: Write failing state tests**
 
@@ -401,15 +411,15 @@ Expected: all state creation, preservation, validation and concurrency cases pas
 - [ ] **Step 4: Commit state persistence**
 
 ```powershell
-git add packages/bundle/src/state.ts packages/bundle/tests/state.spec.ts
+git add dsh/packages/bundle/src/state.ts dsh/packages/bundle/tests/state.spec.ts
 git commit -m "feat: persist MomentQ content state"
 ```
 
 ### Task 4: Implement the Host content and Session router
 
 **Files:**
-- Create: `packages/bundle/src/index.ts`
-- Test: `packages/bundle/tests/host.spec.ts`
+- Create: `dsh/packages/bundle/src/index.ts`
+- Test: `dsh/packages/bundle/tests/host.spec.ts`
 
 - [ ] **Step 1: Write failing Host service tests**
 
@@ -485,15 +495,15 @@ Expected: all create, resume, conflict and concurrency cases pass.
 - [ ] **Step 4: Commit Host routing**
 
 ```powershell
-git add packages/bundle/src/index.ts packages/bundle/tests/host.spec.ts
+git add dsh/packages/bundle/src/index.ts dsh/packages/bundle/tests/host.spec.ts
 git commit -m "feat: route MomentQ content sessions"
 ```
 
 ### Task 5: Inject frozen Session instructions and safe content metadata
 
 **Files:**
-- Create: `packages/bundle/src/session-context.ts`
-- Test: `packages/bundle/tests/session-context.spec.ts`
+- Create: `dsh/packages/bundle/src/session-context.ts`
+- Test: `dsh/packages/bundle/tests/session-context.spec.ts`
 
 - [ ] **Step 1: Write failing prompt tests**
 
@@ -556,15 +566,15 @@ Expected: deterministic rendering, truncation, untrusted-data notice and exclusi
 - [ ] **Step 4: Commit Session context**
 
 ```powershell
-git add packages/bundle/src/session-context.ts packages/bundle/tests/session-context.spec.ts
+git add dsh/packages/bundle/src/session-context.ts dsh/packages/bundle/tests/session-context.spec.ts
 git commit -m "feat: add MomentQ session prompt context"
 ```
 
 ### Task 6: Wrap native grep and read around the transcript file
 
 **Files:**
-- Create: `packages/bundle/src/tool-policy.ts`
-- Test: `packages/bundle/tests/tool-policy.spec.ts`
+- Create: `dsh/packages/bundle/src/tool-policy.ts`
+- Test: `dsh/packages/bundle/tests/tool-policy.spec.ts`
 
 - [ ] **Step 1: Write failing tool-policy tests**
 
@@ -604,17 +614,17 @@ Expected: all visibility, schema and filesystem-boundary tests pass.
 - [ ] **Step 4: Commit the restricted tools**
 
 ```powershell
-git add packages/bundle/src/tool-policy.ts packages/bundle/tests/tool-policy.spec.ts
+git add dsh/packages/bundle/src/tool-policy.ts dsh/packages/bundle/tests/tool-policy.spec.ts
 git commit -m "feat: confine transcript tools to session cwd"
 ```
 
 ### Task 7: Assemble the fixed Preset and installable Bundle patch
 
 **Files:**
-- Create: `packages/bundle/presets/momentq/preset.yml`
-- Create: `packages/bundle/presets/momentq/agent.cordis.yml`
-- Create: `packages/bundle/cordis.patch.yml`
-- Test: `packages/bundle/tests/preset.spec.ts`
+- Create: `dsh/packages/bundle/presets/momentq/preset.yml`
+- Create: `dsh/packages/bundle/presets/momentq/agent.cordis.yml`
+- Create: `dsh/packages/bundle/cordis.patch.yml`
+- Test: `dsh/packages/bundle/tests/preset.spec.ts`
 
 - [ ] **Step 1: Write failing composition tests**
 
@@ -682,18 +692,18 @@ Expected: `dist/index.js`, `dist/session-context.js`, `dist/tool-policy.js`, dec
 - [ ] **Step 6: Commit the Bundle assembly**
 
 ```powershell
-git add packages/bundle/presets packages/bundle/cordis.patch.yml packages/bundle/tests/preset.spec.ts
+git add dsh/packages/bundle/presets dsh/packages/bundle/cordis.patch.yml dsh/packages/bundle/tests/preset.spec.ts
 git commit -m "feat: assemble MomentQ agent preset"
 ```
 
 ### Task 8: Expose the localhost API and browser-safe SDK
 
 **Files:**
-- Create: `packages/bundle/src/http-api.ts`
-- Create: `packages/bundle/src/sdk.ts`
-- Test: `packages/bundle/tests/http-api.spec.ts`
-- Test: `packages/bundle/tests/sdk.spec.ts`
-- Modify: `packages/bundle/cordis.patch.yml`
+- Create: `dsh/packages/bundle/src/http-api.ts`
+- Create: `dsh/packages/bundle/src/sdk.ts`
+- Test: `dsh/packages/bundle/tests/http-api.spec.ts`
+- Test: `dsh/packages/bundle/tests/sdk.spec.ts`
+- Modify: `dsh/packages/bundle/cordis.patch.yml`
 
 - [ ] **Step 1: Write failing HTTP API tests**
 
@@ -750,16 +760,16 @@ Expected: all dispatch, validation, loopback, transport and error cases pass.
 - [ ] **Step 6: Commit the API and SDK**
 
 ```powershell
-git add packages/bundle/src/http-api.ts packages/bundle/src/sdk.ts packages/bundle/tests/http-api.spec.ts packages/bundle/tests/sdk.spec.ts packages/bundle/package.json packages/bundle/tsdown.config.ts packages/bundle/cordis.patch.yml
+git add dsh/packages/bundle/src/http-api.ts dsh/packages/bundle/src/sdk.ts dsh/packages/bundle/tests/http-api.spec.ts dsh/packages/bundle/tests/sdk.spec.ts dsh/packages/bundle/package.json dsh/packages/bundle/tsdown.config.ts dsh/packages/bundle/cordis.patch.yml
 git commit -m "feat: expose MomentQ host API and SDK"
 ```
 
 ### Task 9: Verify persistence, document operation and update the product plan
 
 **Files:**
-- Create: `packages/bundle/README.md`
+- Create: `dsh/packages/bundle/README.md`
 - Modify: `docs/project-plan.md`
-- Create: `packages/bundle/tests/bundle.e2e.ts`
+- Create: `dsh/packages/bundle/tests/bundle.e2e.ts`
 
 - [ ] **Step 1: Add a keyless assembled-runtime test**
 
@@ -788,7 +798,7 @@ The Bundle contains no ASR credentials and exposes no browser UI.
 Include the PowerShell and future Docker commands from this plan, plus installation through:
 
 ```powershell
-dsh plugin --profile web add .\packages\bundle
+dsh plugin --profile web add .\dsh\packages\bundle
 ```
 
 - [ ] **Step 3: Update `docs/project-plan.md`**
@@ -811,8 +821,41 @@ Expected: all commands exit zero and the tarball contains only built JavaScript/
 - [ ] **Step 5: Commit the verified DSH layer**
 
 ```powershell
-git add packages/bundle/README.md packages/bundle/tests/bundle.e2e.ts docs/project-plan.md
+git add dsh/packages/bundle/README.md dsh/packages/bundle/tests/bundle.e2e.ts docs/project-plan.md
 git commit -m "docs: define MomentQ DSH deployment"
+```
+
+### Task 10: Package the DSH runtime for local and Docker execution
+
+**Files:**
+- Create: `dsh/package.json`
+- Create: `dsh/packages/runtime/package.json`
+- Create: `dsh/packages/runtime/src/cli.ts`
+- Create: `dsh/docker/Dockerfile`
+- Create: `dsh/docker/entrypoint.sh`
+- Create: `dsh/README.md`
+
+- [ ] **Step 1: Define the runtime boundary**
+
+Keep `dsh/packages/bundle` as the publishable MomentQ plugin with DSH peer dependencies. Add a runtime package that pins the DSH CLI, native filesystem/search/session plugins, the fixed `momentq-dsh-bundle`, and the default Web Profile composition. The runtime, not the browser extension, owns process startup and DSH configuration.
+
+- [ ] **Step 2: Add a native local launcher**
+
+Expose a `momentq-dsh start` command that requires `MOMENTQ_DATA_ROOT`, derives `DSH_HOME=<root>/dsh-home`, rejects a conflicting `DSH_HOME`, creates the root directories, and starts the DSH Web Profile on `127.0.0.1`. Credentials remain in DSH settings and are never placed in the Bundle or launcher arguments.
+
+- [ ] **Step 3: Add the Docker runtime**
+
+Build an image containing Node.js, the pinned DSH native framework, the runtime package and the MomentQ Bundle. The entrypoint must validate `MOMENTQ_DATA_ROOT` and `DSH_HOME`, run DSH as the foreground process, and document a bind mount for the whole logical root. A container writable layer is never the only persistence location.
+
+- [ ] **Step 4: Verify distribution paths**
+
+Run the native launcher and Docker image against a temporary root. Confirm the browser-safe SDK reaches the loopback API, the Bundle loads from the runtime package, Session artifacts stay below `<root>/dsh-home`, content files stay below `<root>/content`, and restart resumes the same Session.
+
+- [ ] **Step 5: Commit the runtime packaging**
+
+```powershell
+git add dsh/package.json dsh/packages/runtime dsh/docker dsh/README.md pnpm-workspace.yaml
+git commit -m "feat: package MomentQ DSH runtime"
 ```
 
 ## Follow-up plans
@@ -821,4 +864,4 @@ Create these only after this plan passes its assembled-runtime test:
 
 1. Chrome/Edge extension side-panel UI and DSH conversation streaming integration.
 2. Bilibili subtitle import and Baidu realtime ASR modules using the Host API as the `state.json` writer.
-3. Windows installer, Native Messaging launcher and optional Docker image.
+3. Windows installer and Native Messaging launcher built on the DSH runtime package.

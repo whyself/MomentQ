@@ -24,7 +24,7 @@ importers:
         specifier: ^4.1.8
         version: 4.1.11(@types/node@24.13.3)(vite@8.2.2(@types/node@24.13.3))
 
-  packages/bundle:
+  dsh/packages/bundle:
     dependencies:
       '@deepseek-ai/schemastery':
         specifier: ^3.18.1

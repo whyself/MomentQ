@@ -37,12 +37,14 @@ deepseek-official / deepseek-v4-flash-vision-exp
 
 `state.json` 由 MomentQ Host 单独写入。后续浏览器扩展、字幕导入器和 ASR 模块必须通过 Host API 提交状态更新，避免多个写入者覆盖状态。DSH Agent 对内容文件始终只读。
 
-## 本地安装和启动
+## 开发者安装和启动
+
+这是 Bundle 的开发验证流程。最终用户不需要预先安装和配置 DSH；计划中的 `dsh/packages/runtime` 将固定 DSH 原生框架和插件版本并提供统一启动命令，`dsh/docker` 将提供等价的容器发行方式。
 
 ```powershell
 pnpm install
 pnpm build
-dsh plugin --profile web add .\packages\bundle
+dsh plugin --profile web add .\dsh\packages\bundle
 
 $momentqRoot = 'D:\MomentQData'
 $env:MOMENTQ_DATA_ROOT = $momentqRoot

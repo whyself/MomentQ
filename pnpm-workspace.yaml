@@ -1,5 +1,6 @@
 packages:
   - packages/*
+  - dsh/packages/*
 
 allowBuilds:
   koffi: true

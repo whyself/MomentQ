@@ -93,5 +93,5 @@ Agent 使用固定的 `momentq` Preset，新 Session 默认模型为 `deepseek-o
 
 MomentQ Host 在 DSH loopback WebServer 上注册 `/momentq/api`，并随 Bundle 提供浏览器安全 SDK。第一版接口覆盖内容创建／恢复、状态读取、Session 归档／重置／删除和完整内容删除；接口只接受内容身份，不接受 cwd、Session ID、Preset ID 或任意路径。
 
-本地 MVP 不强制使用 Docker；Provider 保持抽象，后续可增加腾讯、火山、Deepgram 或本地 ASR，而不修改字幕与 Agent 层。
+本地 MVP 不强制使用 Docker；Provider 保持抽象，后续可增加腾讯、火山、Deepgram 或本地 ASR，而不修改字幕与 Agent 层。DSH 运行层独立放在 `dsh/`，由原生 runtime 或 Docker 发行版携带固定的 DSH 框架与 MomentQ Bundle；浏览器扩展和其他应用组件放在根目录 `packages/`。
 
