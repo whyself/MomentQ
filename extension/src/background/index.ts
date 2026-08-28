@@ -601,7 +601,18 @@ async function readOrResolveState(tabId: number): Promise<MomentQTabState | null
     resolve: currentUrl => resolveSnapshotViaBilibiliApi({ url: currentUrl }),
     currentUrl: async () => (await chrome.tabs.get(tabId).catch(() => null))?.url,
   })
-  return context === null ? stored : applyContext(tabId, context)
+  if (context === null) return stored
+  // Same pod-navigation hazard as refreshVodContext: a p-less URL resolves
+  // to part 1; never clobber a player-proven part binding with it.
+  if (context.kind === 'vod' && context.metadata.part !== undefined) {
+    const location = parseBilibiliLocation(url)
+    if (location?.kind === 'vod' && location.requestedPart === undefined
+      && stored?.context.kind === 'vod'
+      && stored.context.identity.bvid === context.identity.bvid) {
+      return stored
+    }
+  }
+  return applyContext(tabId, context)
 }
 
 async function refreshVodContext(tabId: number, url: string): Promise<MomentQTabState | null> {
@@ -613,7 +624,21 @@ async function refreshVodContext(tabId: number, url: string): Promise<MomentQTab
   })
   // A later navigation may overtake this refresh. Never publish a transient
   // null (or clear the previous frame/subtitle UI) while resolving.
-  return context === null ? await readState(tabId) : applyContext(tabId, context)
+  if (context === null) return await readState(tabId)
+  // A p-less URL resolves to the video's first part, but pod navigation can
+  // be playing any part. Overwriting a player-proven binding with the
+  // part-1 resolution shows part-1 subtitles (or diagnostics) over whatever
+  // part is actually playing — subtitles that "do not match the video".
+  if (context.kind === 'vod' && context.metadata.part !== undefined) {
+    const location = parseBilibiliLocation(url)
+    if (location?.kind === 'vod' && location.requestedPart === undefined) {
+      const previous = await readState(tabId)
+      if (previous?.context.kind === 'vod' && previous.context.identity.bvid === context.identity.bvid) {
+        return previous
+      }
+    }
+  }
+  return applyContext(tabId, context)
 }
 
 async function toggleTranscriptionUnlocked(tabId: number): Promise<MomentQTabState | null> {

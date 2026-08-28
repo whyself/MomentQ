@@ -144,4 +144,15 @@ describe('panel-open bridge recovery', () => {
     expect(offscreen).toMatch(/MOMENTQ_ASR_QUERY[\s\S]{0,400}sendResponse/)
     expect(background).toContain("reply.type === 'MOMENTQ_ASR_SESSION'")
   })
+
+  it('never lets a part-1 resolution clobber a player-proven part binding', async () => {
+    const background = await readFile(join(import.meta.dirname, '..', 'src', 'background', 'index.ts'), 'utf8')
+    // A p-less URL resolves to part 1; overwriting the playing part with it
+    // displayed part-1 subtitles over whatever part was actually playing.
+    for (const name of ['async function refreshVodContext', 'async function readOrResolveState']) {
+      const body = background.slice(background.indexOf(name))
+      expect(body).toContain('requestedPart === undefined')
+      expect(body).toMatch(/\w+\.context\.identity\.bvid === context\.identity\.bvid/)
+    }
+  })
 })
