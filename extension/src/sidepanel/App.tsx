@@ -112,7 +112,17 @@ export function App({ subscribe }: {
         // click handler on an extension surface; the background completes
         // the pipeline with the handed-over stream id.
         const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: state.tabId }).catch(() => null)
-        if (streamId === null) return
+        if (streamId === null) {
+          // Chrome refused the panel-obtained stream id. Falling back lets
+          // the background try and, when it is rejected too, record the
+          // reason on the tab state — the panel shows why instead of the
+          // click vanishing without a trace.
+          await chrome.runtime.sendMessage({
+            type: 'MOMENTQ_TOGGLE_TRANSCRIPTION',
+            tabId: state.tabId,
+          }).catch(() => {})
+          return
+        }
         await chrome.runtime.sendMessage({
           type: 'MOMENTQ_ASR_START_FROM_PANEL',
           tabId: state.tabId,

@@ -76,4 +76,14 @@ describe('panel-open bridge recovery', () => {
     expect(click).toContain('[data-lan="ai-zh"]')
     expect(click).toContain('自动翻译')
   })
+
+  it('never drops a failed capture start silently from the panel', async () => {
+    const app = await readFile(join(import.meta.dirname, '..', 'src', 'sidepanel', 'App.tsx'), 'utf8')
+    const toggle = app.slice(app.indexOf('function toggleTranscription'))
+    // When Chrome refuses the panel-obtained stream id the click must still
+    // land somewhere visible: the background retries and records the reason.
+    expect(toggle).toContain('streamId === null')
+    expect(toggle.indexOf('streamId === null')).toBeLessThan(toggle.indexOf("type: 'MOMENTQ_ASR_START_FROM_PANEL'"))
+    expect(toggle).toMatch(/streamId === null[\s\S]{0,400}MOMENTQ_TOGGLE_TRANSCRIPTION/)
+  })
 })
