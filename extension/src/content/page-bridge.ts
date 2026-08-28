@@ -1,5 +1,6 @@
 import type { BilibiliPageSnapshot, PageMessageEnvelope, PageSubtitleTracksMessageEnvelope } from '../shared/protocol'
 import { parseSubtitleIndex, subtitleTracks, subtitleUrlsFromWebResponse } from '../shared/bilibili-subtitle'
+import { identityConsistent, type RawVodIdentity } from './snapshot-identity'
 import { selectVodPage } from './page-snapshot'
 
 declare global {
@@ -139,7 +140,7 @@ function liveSnapshot(initial: unknown): BilibiliPageSnapshot {
   }) as BilibiliPageSnapshot
 }
 
-function readSnapshot(): BilibiliPageSnapshot {
+function readSnapshotParts(): { snapshot: BilibiliPageSnapshot; rawVod: RawVodIdentity | undefined } {
   if (lastBridgeUrl === '') lastBridgeUrl = window.location.href
   if (window.location.href !== lastBridgeUrl) {
     lastBridgeUrl = window.location.href
@@ -152,10 +153,21 @@ function readSnapshot(): BilibiliPageSnapshot {
   const snapshot = location.hostname === 'live.bilibili.com'
     ? liveSnapshot(window.__INITIAL_STATE__)
     : vodSnapshot(window.__INITIAL_STATE__, window.__playinfo__)
+  // Capture the page's own values before the resolved identity is merged on
+  // top: during a SPA transition __INITIAL_STATE__ still describes the
+  // previous video, and its surviving aid must never be combined with the
+  // new bvid/cid when probing subtitle endpoints.
+  const rawVod = snapshot.vod === undefined
+    ? undefined
+    : { bvid: snapshot.vod.bvid, cid: snapshot.vod.cid, aid: snapshot.vod.aid }
   if (snapshot.vod !== undefined && resolvedVodIdentity !== undefined) {
     snapshot.vod = { ...snapshot.vod, ...resolvedVodIdentity }
   }
-  return snapshot
+  return { snapshot, rawVod }
+}
+
+function readSnapshot(): BilibiliPageSnapshot {
+  return readSnapshotParts().snapshot
 }
 
 let subtitleRequestKey = ''
@@ -215,7 +227,14 @@ async function publishSubtitle(snapshot: BilibiliPageSnapshot): Promise<void> {
 
     // New AI subtitles expose a URL-less `ai-zh` entry in videoData.subtitle.
     // The player resolves that entry through the protobuf subtitle-web API.
-    const aid = snapshot.vod?.aid
+    // That probe keys off (cid, aid) and its protobuf response carries no
+    // verifiable identity, so only run it while the page's own state agrees
+    // with this identity — a stale __INITIAL_STATE__ otherwise supplies the
+    // previous video's aid and its track gets imported under this identity.
+    const { rawVod } = readSnapshotParts()
+    const aid = identityConsistent(rawVod, { bvid, cid: String(cid) })
+      ? rawVod?.aid
+      : undefined
     if (aid !== undefined) {
       const subtitleViewUrl = `https://api.bilibili.com/x/v2/subtitle/web/view?oid=${encodeURIComponent(String(cid))}&pid=${encodeURIComponent(String(aid))}&context_ext=${encodeURIComponent('{"video_type":1}')}&type=1&cur_production_type=0&preferred_language=ai-zh&playlist_switch=0`
       const subtitleViewResponse = await pageFetch(subtitleViewUrl, { credentials: 'include', signal: controller.signal })
@@ -373,10 +392,15 @@ function installBridge(): void {
   // player's subtitle resource once for this content identity.
   window.setInterval(() => {
     installSubtitleNetworkTap()
-    const snapshot = readSnapshot()
+    const { snapshot, rawVod } = readSnapshotParts()
     if (snapshot.vod?.bvid !== undefined && snapshot.vod.cid !== undefined) {
       void publishSubtitle(snapshot)
-      requestBilibiliSubtitleLoad(snapshot)
+      // The auto-click drives whatever player is in the DOM; with a stale
+      // page state that is the previous video's player, and forcing its
+      // subtitle menu would burn this identity's one-shot attempt.
+      if (identityConsistent(rawVod, { bvid: snapshot.vod.bvid, cid: String(snapshot.vod.cid) })) {
+        requestBilibiliSubtitleLoad(snapshot)
+      }
     }
   }, 750)
   publish()
