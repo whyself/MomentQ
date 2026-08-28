@@ -312,22 +312,35 @@ function applyContext(tabId: number, context: BilibiliContext | null): Promise<M
 }
 
 const verifiedSubtitleIdentities = new Set<string>()
+/** Non-definitive empties may be re-checked after this long (AI subtitles generate lazily). */
+const SUBTITLE_RETRY_INTERVAL_MS = 45_000
+const subtitleRetryNotBefore = new Map<string, number>()
 
 /** Authoritative Bilibili subtitle check; runs outside the per-tab queue. */
 async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliContext, { kind: 'vod' }>): Promise<void> {
   const { bvid, cid } = context.identity
-  // One authoritative check per content identity; in-flight dedupe is scoped
-  // to the tab as well so two tabs watching the same episode each receive
-  // their own MomentQTabState.
+  // A positive import or a proven absence is final for this identity; a
+  // non-definitive empty stays retryable (throttled) so lazily generated AI
+  // tracks are picked up without a page refresh. In-flight dedupe is scoped
+  // to the tab as well so two tabs on the same episode each get their own
+  // MomentQTabState.
   const verifyKey = `${bvid}:${cid}`
   if (verifiedSubtitleIdentities.has(verifyKey)) return
+  const retryNotBefore = subtitleRetryNotBefore.get(verifyKey)
+  if (retryNotBefore !== undefined && Date.now() < retryNotBefore) return
   const key = `${tabId}:${bvid}:${cid}`
   const previous = subtitleSyncs.get(key)
   if (previous !== undefined) return await previous
   const current = (async (): Promise<void> => {
     const report = await fetchBilibiliSubtitle(bvid, cid)
-    verifiedSubtitleIdentities.add(verifyKey)
-    if (report.segments === null && !report.definitiveEmpty) return
+    if (report.segments !== null && report.segments.length > 0) {
+      verifiedSubtitleIdentities.add(verifyKey)
+    } else if (report.definitiveEmpty) {
+      verifiedSubtitleIdentities.add(verifyKey)
+    } else {
+      subtitleRetryNotBefore.set(verifyKey, Date.now() + SUBTITLE_RETRY_INTERVAL_MS)
+      return
+    }
     const settings = await loadSettings()
     const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
     const segments = report.segments ?? []
@@ -369,7 +382,7 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
       publishState(tabId, next)
     })
   })().catch(() => {
-    verifiedSubtitleIdentities.delete(verifyKey)
+    subtitleRetryNotBefore.delete(verifyKey)
   })
   subtitleSyncs.set(key, current)
   try {
@@ -640,6 +653,19 @@ chrome.commands.onCommand.addListener((command) => {
   })
 })
 
+/** Periodically re-check video tabs that still have no subtitle track. */
+async function reconcileVideoSubtitles(): Promise<void> {
+  const tabs = await chrome.tabs.query({ url: ['https://www.bilibili.com/video/*'] }).catch(() => [])
+  for (const tab of tabs) {
+    if (tab.id === undefined) continue
+    const state = await readState(tab.id)
+    if (state?.context.kind !== 'vod') continue
+    if (state.subtitleSource === 'asr') continue
+    if ((state.subtitleSegments?.length ?? 0) > 0) continue
+    await syncBilibiliSubtitle(tab.id, state.context)
+  }
+}
+
 async function configureSidePanel(): Promise<void> {
   // A disabled option from an older build can persist across a service-worker
   // restart. Explicitly overwrite it so upgraded installs regain the action.
@@ -649,3 +675,6 @@ async function configureSidePanel(): Promise<void> {
 
 void configureSidePanel()
 void restoreAsrSession()
+// AI subtitles generate lazily after the player first asks for them; keep
+// reconciling trackless video tabs so they appear without a page refresh.
+setInterval(() => { void reconcileVideoSubtitles() }, 30_000)

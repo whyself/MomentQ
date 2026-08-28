@@ -252,12 +252,23 @@ function installSubtitleNetworkTap(): void {
       if (!/subtitle|subtitles|player\/(?:v2|wbi\/v2)/i.test(raw)) return
       void response.clone().json().then(payload => {
         const snapshot = readSnapshot()
+        // Compare against the resolved identity when one exists: right after
+        // a SPA navigation the player's own subtitle-bearing init responses
+        // can arrive while __INITIAL_STATE__ still describes the previous
+        // video, and rejecting them there loses the track until a refresh.
+        const target = resolvedVodIdentity
+          ?? (snapshot.vod?.bvid !== undefined && snapshot.vod.cid !== undefined
+            ? { bvid: snapshot.vod.bvid, cid: String(snapshot.vod.cid) }
+            : undefined)
+        if (target === undefined) return
         const payloadBvid = firstString(at(payload, 'data', 'bvid'))
         const payloadCid = firstId(at(payload, 'data', 'cid'))
-        if ((payloadBvid !== undefined && payloadBvid !== snapshot.vod?.bvid)
-          || (payloadCid !== undefined && String(payloadCid) !== String(snapshot.vod?.cid))) return
+        if ((payloadBvid !== undefined && payloadBvid !== target.bvid)
+          || (payloadCid !== undefined && String(payloadCid) !== target.cid)) return
         const tracks = subtitleTracks(payload)
-        if (tracks.length > 0) postSubtitleTracks(snapshot, tracks)
+        if (tracks.length > 0) {
+          postSubtitleTracks({ ...snapshot, vod: { ...snapshot.vod, bvid: target.bvid, cid: target.cid } }, tracks)
+        }
       }).catch(() => {})
     }).catch(() => {})
     return promise
