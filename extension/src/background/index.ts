@@ -16,15 +16,14 @@ import type {
   GetCurrentVideoTimeMessage,
   ResolvePageSnapshotMessage,
   PageSubtitleTracksMessageEnvelope,
-  PageSubtitlePositionMessageEnvelope,
   BilibiliSubtitleSegment,
 } from '../shared/protocol'
-import { isBilibiliPageSnapshot, isPageSubtitlePositionMessageEnvelope, isPageSubtitleTracksMessageEnvelope } from '../shared/protocol'
+import { isBilibiliPageSnapshot, isPageSubtitleTracksMessageEnvelope } from '../shared/protocol'
 import { fetchBilibiliSubtitle, fetchSubtitleTrackUrl } from './bilibili-subtitle'
 import { MomentQClient } from '../shared/host-client'
 import { loadSettings } from '../shared/settings-store'
 
-type WorkerRequest = PageContextRuntimeMessage | ResolvePageSnapshotMessage | GetTabStateMessage | ToggleTranscriptionMessage | ToggleCurrentTranscriptionMessage | CaptureCurrentFrameMessage | GetCurrentVideoTimeMessage | PageSubtitleTracksMessageEnvelope | PageSubtitlePositionMessageEnvelope
+type WorkerRequest = PageContextRuntimeMessage | ResolvePageSnapshotMessage | GetTabStateMessage | ToggleTranscriptionMessage | ToggleCurrentTranscriptionMessage | CaptureCurrentFrameMessage | GetCurrentVideoTimeMessage | PageSubtitleTracksMessageEnvelope
 
 const storageKey = (tabId: number) => `tab:${tabId}`
 const tabOperations = new TabOperationQueue()
@@ -45,7 +44,6 @@ function requestType(value: unknown): WorkerRequest['type'] | null {
     || value.type === 'MOMENTQ_CAPTURE_CURRENT_FRAME') return value.type
   if (value.type === 'MOMENTQ_GET_CURRENT_VIDEO_TIME') return value.type
   if (value.type === 'PAGE_SUBTITLE_TRACKS' && isPageSubtitleTracksMessageEnvelope(value)) return value.type
-  if (value.type === 'PAGE_SUBTITLE_POSITION' && isPageSubtitlePositionMessageEnvelope(value)) return value.type
   return null
 }
 
@@ -145,7 +143,6 @@ async function syncPageSubtitleTracks(tabId: number, message: PageSubtitleTracks
     const {
       subtitleSegments: _segments,
       subtitleIdentity: _identity,
-      subtitleCurrentTime: _time,
       ...withoutSubtitle
     } = current
     const next = { ...withoutSubtitle, transcription: 'inactive' as const }
@@ -249,19 +246,6 @@ async function handleRequest(
       await syncPageSubtitleTracks(tabId, message)
       return await readState(tabId)
     })
-  }
-
-  if (type === 'PAGE_SUBTITLE_POSITION') {
-    const tabId = sender.tab?.id
-    if (tabId === undefined || !isPageSubtitlePositionMessageEnvelope(message)) return null
-    const state = await readState(tabId)
-    if (state?.context.kind !== 'vod'
-      || state.context.identity.bvid !== message.payload.bvid
-      || state.context.identity.cid !== message.payload.cid) return null
-    const next = { ...state, subtitleCurrentTime: message.payload.currentTime }
-    await writeState(tabId, next)
-    publishState(tabId, next)
-    return next
   }
 
   if (type === 'MOMENTQ_PAGE_CONTEXT') {

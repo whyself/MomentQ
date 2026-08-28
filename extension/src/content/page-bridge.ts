@@ -162,7 +162,6 @@ let subtitleRequestKey = ''
 let subtitleInflightKey = ''
 let subtitleRequest: AbortController | undefined
 let pageFetch: typeof window.fetch = window.fetch.bind(window)
-let subtitlePositionTimer: number | undefined
 let subtitleAutoRequestKey = ''
 let subtitleFetchHookInstalled = false
 
@@ -299,21 +298,6 @@ function requestBilibiliSubtitleLoad(snapshot: BilibiliPageSnapshot): void {
   clickVisibleItem(0)
 }
 
-function installSubtitlePositionPublisher(): void {
-  if (subtitlePositionTimer !== undefined || location.hostname === 'live.bilibili.com') return
-  subtitlePositionTimer = window.setInterval(() => {
-    const snapshot = readSnapshot()
-    const bvid = snapshot.vod?.bvid
-    const cid = snapshot.vod?.cid
-    const video = document.querySelector('video')
-    if (bvid === undefined || cid === undefined || video === null || !Number.isFinite(video.currentTime)) return
-    window.postMessage({
-      source: 'momentq-page', version: 1, type: 'PAGE_SUBTITLE_POSITION',
-      payload: { bvid, cid: String(cid), currentTime: Math.max(0, video.currentTime) },
-    }, location.origin)
-  }, 250)
-}
-
 function installBridge(): void {
   if (window.__MOMENTQ_PAGE_BRIDGE_V1__) return
   window.__MOMENTQ_PAGE_BRIDGE_V1__ = true
@@ -360,9 +344,6 @@ function installBridge(): void {
   window.addEventListener('popstate', schedule)
   window.addEventListener('hashchange', schedule)
   installSubtitleNetworkTap()
-  // Keep the clock publisher enabled so the side panel can align the ticker
-  // even when the player was initialized after document_start.
-  installSubtitlePositionPublisher()
   window.addEventListener('message', (event: MessageEvent<unknown>) => {
     const value = event.data
     if (event.source !== window || event.origin !== location.origin

@@ -63,7 +63,6 @@ export function reduceTabState(
       transcription: preserve ? state.transcription : 'inactive',
       ...(preserve && state.subtitleSegments !== undefined ? { subtitleSegments: state.subtitleSegments } : {}),
       ...(preserve && state.subtitleIdentity !== undefined ? { subtitleIdentity: state.subtitleIdentity } : {}),
-      ...(preserve && state.subtitleCurrentTime !== undefined ? { subtitleCurrentTime: state.subtitleCurrentTime } : {}),
     }
   }
 

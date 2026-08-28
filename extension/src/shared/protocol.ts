@@ -79,13 +79,6 @@ export type PageSubtitleTracksMessageEnvelope = {
   }
 }
 
-export type PageSubtitlePositionMessageEnvelope = {
-  source: 'momentq-page'
-  version: 1
-  type: 'PAGE_SUBTITLE_POSITION'
-  payload: { bvid: string; cid: string; currentTime: number }
-}
-
 export type PageContextRuntimeMessage = {
   type: 'MOMENTQ_PAGE_CONTEXT'
   context: BilibiliContext | null
@@ -106,7 +99,6 @@ export type MomentQTabState = {
   subtitleSegments?: BilibiliSubtitleSegment[]
   /** Identity of subtitleSegments; the UI must never render across a mismatch. */
   subtitleIdentity?: { bvid: string; cid: string }
-  subtitleCurrentTime?: number
 }
 
 export type GetTabStateMessage = {
@@ -228,14 +220,3 @@ export function isPageSubtitleTracksMessageEnvelope(value: unknown): value is Pa
     && value.payload.tracks.every(track => typeof track === 'string' && track.startsWith('https://'))
 }
 
-export function isPageSubtitlePositionMessageEnvelope(value: unknown): value is PageSubtitlePositionMessageEnvelope {
-  return isPlainRecord(value)
-    && hasOnlyKeys(value, ['source', 'version', 'type', 'payload'])
-    && value.source === 'momentq-page' && value.version === 1 && value.type === 'PAGE_SUBTITLE_POSITION'
-    && isPlainRecord(value.payload)
-    && hasOnlyKeys(value.payload, ['bvid', 'cid', 'currentTime'])
-    && typeof value.payload.bvid === 'string' && value.payload.bvid.trim() !== ''
-    && typeof value.payload.cid === 'string' && value.payload.cid.trim() !== ''
-    && typeof value.payload.currentTime === 'number' && Number.isFinite(value.payload.currentTime)
-    && value.payload.currentTime >= 0
-}
