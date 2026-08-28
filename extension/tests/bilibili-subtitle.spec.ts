@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { fetchBilibiliSubtitle } from '../src/background/bilibili-subtitle'
-import { parseSubtitleIndex, subtitleTracks, subtitleUrlsFromBinary } from '../src/shared/bilibili-subtitle'
+import { parseSubtitleIndex, subtitleTracks } from '../src/shared/bilibili-subtitle'
 
 describe('Bilibili subtitle acquisition', () => {
   it('selects the Chinese track and normalizes subtitle JSON', async () => {
@@ -25,10 +25,13 @@ describe('Bilibili subtitle acquisition', () => {
         { from: -1, to: 2, content: '忽略' },
       ] }), { status: 200 })
     }
-    await expect(fetchBilibiliSubtitle('BV1xx', '42', request)).resolves.toEqual([
-      { start: 0, end: 1.5, text: '第一行' },
-      { start: 1.5, end: 2.5, text: '第二行' },
-    ])
+    await expect(fetchBilibiliSubtitle('BV1xx', '42', request)).resolves.toEqual({
+      segments: [
+        { start: 0, end: 1.5, text: '第一行' },
+        { start: 1.5, end: 2.5, text: '第二行' },
+      ],
+      definitiveEmpty: false,
+    })
     expect(calls).toEqual([
       'https://api.bilibili.com/x/player/wbi/v2?bvid=BV1xx&cid=42',
       'https://aisubtitle.hdslb.com/zh.json',
@@ -39,11 +42,27 @@ describe('Bilibili subtitle acquisition', () => {
     ])
   })
 
+  it('reports a validated empty index as definitive absence', async () => {
+    const request: typeof fetch = async () => new Response(JSON.stringify({
+      code: 0,
+      data: { bvid: 'BV1xx', cid: 42, need_login_subtitle: false, subtitle: { subtitles: [] } },
+    }), { status: 200 })
+    await expect(fetchBilibiliSubtitle('BV1xx', '42', request)).resolves.toEqual({
+      segments: null,
+      definitiveEmpty: true,
+    })
+  })
+
   it('fails closed for non-Bilibili subtitle URLs and missing tracks', async () => {
     const request: typeof fetch = async () => new Response(JSON.stringify({
       code: 0, data: { bvid: 'BV1xx', cid: 42, subtitle: { subtitles: [{ subtitle_url: 'https://evil.example/sub.json' }] } },
     }), { status: 200 })
-    await expect(fetchBilibiliSubtitle('BV1xx', '42', request)).resolves.toBeNull()
+    // The identity validates, but the only track URL fails the host
+    // allowlist, so the video counts as having no usable track.
+    await expect(fetchBilibiliSubtitle('BV1xx', '42', request)).resolves.toEqual({
+      segments: null,
+      definitiveEmpty: true,
+    })
   })
 
   it('rejects a stale response instead of relabelling its track', async () => {
@@ -58,7 +77,10 @@ describe('Bilibili subtitle acquisition', () => {
         },
       }), { status: 200 })
     }
-    await expect(fetchBilibiliSubtitle('BV1xx', '42', request)).resolves.toBeNull()
+    await expect(fetchBilibiliSubtitle('BV1xx', '42', request)).resolves.toEqual({
+      segments: null,
+      definitiveEmpty: false,
+    })
     expect(calls).not.toContain('https://aisubtitle.hdslb.com/wrong.json')
   })
 
@@ -81,19 +103,5 @@ describe('Bilibili subtitle acquisition', () => {
 
     expect(subtitleTracks(payload([english, ai, native]))[0]).toBe('https://aisubtitle.hdslb.com/native.json')
     expect(subtitleTracks(payload([native, english, ai]))[0]).toBe('https://aisubtitle.hdslb.com/native.json')
-  })
-
-  it('extracts a URL-less AI track from the protobuf subtitle-web response', () => {
-    const url = 'https://subtitle.bilibili.com/signed.json?auth_key=1'
-    const encoded = new TextEncoder().encode(url)
-    const entry = new Uint8Array(2 + encoded.length)
-    entry[0] = 0x2a
-    entry[1] = encoded.length
-    entry.set(encoded, 2)
-    const payload = new Uint8Array(2 + entry.length)
-    payload[0] = 0x0a
-    payload[1] = entry.length
-    payload.set(entry, 2)
-    expect(subtitleUrlsFromBinary(payload)).toEqual([url])
   })
 })

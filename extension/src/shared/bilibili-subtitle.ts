@@ -25,65 +25,6 @@ export function subtitleUrl(value: unknown): string | undefined {
   }
 }
 
-function readVarint(bytes: Uint8Array, offset: number): { value: number; next: number } | null {
-  let value = 0
-  let shift = 0
-  let cursor = offset
-  while (cursor < bytes.length && shift < 70) {
-    const byte = bytes[cursor++] ?? 0
-    value += (byte & 0x7f) * 2 ** shift
-    if ((byte & 0x80) === 0) return { value, next: cursor }
-    shift += 7
-  }
-  return null
-}
-
-/** Extract signed subtitle URLs from Bilibili's protobuf subtitle-web reply. */
-export function subtitleUrlsFromBinary(value: ArrayBuffer | Uint8Array): string[] {
-  const bytes = value instanceof Uint8Array ? value : new Uint8Array(value)
-  const urls = new Set<string>()
-  const decoder = new TextDecoder()
-  const scan = (start: number, end: number, depth: number): void => {
-    if (depth > 5) return
-    let offset = start
-    while (offset < end) {
-      const key = readVarint(bytes, offset)
-      if (key === null) return
-      offset = key.next
-      const wire = key.value & 7
-      if (wire === 0) {
-        const scalar = readVarint(bytes, offset)
-        if (scalar === null) return
-        offset = scalar.next
-      } else if (wire === 1) {
-        offset += 8
-      } else if (wire === 2) {
-        const length = readVarint(bytes, offset)
-        if (length === null) return
-        offset = length.next
-        const childEnd = Math.min(end, offset + length.value)
-        const text = decoder.decode(bytes.subarray(offset, childEnd))
-        const normalized = subtitleUrl(text)
-        if (normalized !== undefined) urls.add(normalized)
-        if (depth < 5) scan(offset, childEnd, depth + 1)
-        offset = childEnd
-      } else if (wire === 5) {
-        offset += 4
-      } else {
-        return
-      }
-    }
-  }
-  scan(0, bytes.length, 0)
-  return [...urls]
-}
-
-/** Parse the subtitle-web response, which is protobuf on current Bilibili pages. */
-export function subtitleUrlsFromWebResponse(value: unknown): string[] {
-  if (value instanceof ArrayBuffer || value instanceof Uint8Array) return subtitleUrlsFromBinary(value)
-  return subtitleTracks(value)
-}
-
 function subtitleScore(item: RecordValue): number {
   const lan = (text(item.lan) ?? '').toLowerCase()
   const language = `${lan} ${text(item.lan_doc) ?? ''}`.toLowerCase()

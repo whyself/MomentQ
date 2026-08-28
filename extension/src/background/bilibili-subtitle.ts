@@ -1,12 +1,21 @@
 import type { TranscriptSegment } from '../shared/host-client'
 import { normalizeSubtitleBody, parseSubtitleIndex } from '../shared/bilibili-subtitle'
 
+export type BilibiliSubtitleReport = {
+  segments: TranscriptSegment[] | null
+  /**
+   * True only when a validated index response exposed no tracks and did not
+   * ask for login; only then may callers treat absence as authoritative.
+   */
+  definitiveEmpty: boolean
+}
+
 /** Fetch the best available Bilibili subtitle track for one VOD page. */
 export async function fetchBilibiliSubtitle(
   bvid: string,
   cid: string,
   request: typeof fetch = globalThis.fetch.bind(globalThis),
-): Promise<TranscriptSegment[] | null> {
+): Promise<BilibiliSubtitleReport> {
   try {
     // Current Bilibili players expose AI/native tracks through WBI first. The
     // legacy endpoint remains a compatibility fallback for older pages.
@@ -14,6 +23,7 @@ export async function fetchBilibiliSubtitle(
       `https://api.bilibili.com/x/player/wbi/v2?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(cid)}`,
       `https://api.bilibili.com/x/player/v2?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(cid)}`,
     ]
+    let definitiveEmpty = false
     for (const indexUrl of indexUrls) {
       const indexResponse = await request(indexUrl, { credentials: 'include' })
       if (!indexResponse.ok) continue
@@ -25,12 +35,13 @@ export async function fetchBilibiliSubtitle(
         const response = await request(url, { credentials: 'include' })
         if (!response.ok) continue
         const segments = normalizeSubtitleBody(await response.json())
-        if (segments.length > 0) return segments
+        if (segments.length > 0) return { segments, definitiveEmpty: false }
       }
+      definitiveEmpty ||= index.definitiveEmpty
     }
-    return null
+    return { segments: null, definitiveEmpty }
   } catch {
-    return null
+    return { segments: null, definitiveEmpty: false }
   }
 }
 

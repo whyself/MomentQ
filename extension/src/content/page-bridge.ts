@@ -1,5 +1,5 @@
 import type { BilibiliPageSnapshot, PageMessageEnvelope, PageSubtitleTracksMessageEnvelope } from '../shared/protocol'
-import { parseSubtitleIndex, subtitleTracks, subtitleUrlsFromWebResponse } from '../shared/bilibili-subtitle'
+import { parseSubtitleIndex, subtitleTracks } from '../shared/bilibili-subtitle'
 import { identityConsistent, type RawVodIdentity } from './snapshot-identity'
 import { selectVodPage } from './page-snapshot'
 
@@ -225,28 +225,13 @@ async function publishSubtitle(snapshot: BilibiliPageSnapshot): Promise<void> {
       definitiveEmpty ||= index.definitiveEmpty
     }
 
-    // New AI subtitles expose a URL-less `ai-zh` entry in videoData.subtitle.
-    // The player resolves that entry through the protobuf subtitle-web API.
-    // That probe keys off (cid, aid) and its protobuf response carries no
-    // verifiable identity, so only run it while the page's own state agrees
-    // with this identity — a stale __INITIAL_STATE__ otherwise supplies the
-    // previous video's aid and its track gets imported under this identity.
-    const { rawVod } = readSnapshotParts()
-    const aid = identityConsistent(rawVod, { bvid, cid: String(cid) })
-      ? rawVod?.aid
-      : undefined
-    if (aid !== undefined) {
-      const subtitleViewUrl = `https://api.bilibili.com/x/v2/subtitle/web/view?oid=${encodeURIComponent(String(cid))}&pid=${encodeURIComponent(String(aid))}&context_ext=${encodeURIComponent('{"video_type":1}')}&type=1&cur_production_type=0&preferred_language=ai-zh&playlist_switch=0`
-      const subtitleViewResponse = await pageFetch(subtitleViewUrl, { credentials: 'include', signal: controller.signal })
-      if (subtitleViewResponse.ok) {
-        const tracks = subtitleUrlsFromWebResponse(await subtitleViewResponse.arrayBuffer())
-        if (tracks.length > 0) {
-          const current = readSnapshot()
-          if (current.vod?.bvid === bvid && String(current.vod.cid) === String(cid)) postSubtitleTracks(current, tracks)
-          return
-        }
-      }
-    }
+    // NOTE: there is deliberately no "subtitle-web" (protobuf) discovery
+    // here. Its responses carry no video identity, so whatever it returns can
+    // never be attributed to this bvid/cid — and mis-keyed probes imported
+    // completely unrelated videos' AI tracks. Tracks are only accepted from
+    // validated index responses and player responses whose payload identity
+    // matches the snapshot above; the player-menu auto-click makes Bilibili
+    // surface AI tracks through those verified paths.
     if (definitiveEmpty) postSubtitleTracks(snapshot, [], 'absent')
   } catch {
     // Navigation aborts and missing subtitle tracks are expected.

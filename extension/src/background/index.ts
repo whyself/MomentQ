@@ -288,56 +288,80 @@ async function applyContextUnlocked(tabId: number, context: BilibiliContext | nu
   await writeState(tabId, next)
   if (JSON.stringify(previous) !== JSON.stringify(next)) publishState(tabId, next)
   if (context?.kind === 'vod') {
-    const subtitleMatches = next?.context.kind === 'vod'
-      && next.subtitleIdentity?.bvid === context.identity.bvid
-      && next.subtitleIdentity.cid === context.identity.cid
-      && (next.subtitleSegments?.length ?? 0) > 0
-    // Do not permanently mark a content key as initialized: extension reloads
-    // and tab navigation can clear the in-memory tab state while the same
-    // video remains open. Hydrate the state again whenever its matching track
-    // is absent.
-    if (!subtitleMatches) await syncBilibiliSubtitle(tabId, context)
+    // The authoritative check runs once per content identity regardless of
+    // what the tab state already holds, so stale or mislabelled segments are
+    // reconciled against Bilibili instead of living forever.
+    await syncBilibiliSubtitle(tabId, context)
   }
   return await readState(tabId)
 }
 
+const verifiedSubtitleIdentities = new Set<string>()
+
 async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliContext, { kind: 'vod' }>): Promise<void> {
-  // Scope the in-flight import to the tab as well as the content. Two tabs
-  // watching the same episode must each receive their own MomentQTabState.
-  const key = `${tabId}:${context.identity.bvid}:${context.identity.cid}`
+  const { bvid, cid } = context.identity
+  // One authoritative check per content identity; in-flight dedupe is scoped
+  // to the tab as well so two tabs watching the same episode each receive
+  // their own MomentQTabState.
+  const verifyKey = `${bvid}:${cid}`
+  if (verifiedSubtitleIdentities.has(verifyKey)) return
+  const key = `${tabId}:${bvid}:${cid}`
   const previous = subtitleSyncs.get(key)
   if (previous !== undefined) return await previous
   const current = (async (): Promise<void> => {
-    const existing = await readState(tabId)
-    // While recognition owns this content's transcript, a re-discovered
-    // Bilibili track must not silently replace accumulated ASR rows.
-    if (existing?.subtitleSource === 'asr') return
+    const report = await fetchBilibiliSubtitle(bvid, cid)
+    verifiedSubtitleIdentities.add(verifyKey)
     const settings = await loadSettings()
     const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
-    const segments = await fetchBilibiliSubtitle(context.identity.bvid, context.identity.cid)
-    if (segments === null || segments.length === 0) return
-    // Never erase a valid durable transcript before the replacement track has
-    // been fetched and validated. A temporary API failure must not make an
-    // existing session lose all subtitles.
+    if (report.segments !== null && report.segments.length > 0) {
+      // Never erase a valid durable transcript before the replacement track
+      // has been fetched and validated. A temporary API failure must not make
+      // an existing session lose all subtitles.
+      await client.ensureContent({ identity: context.identity, metadata: context.metadata })
+      await client.syncTranscript(context.identity, 'bilibili', report.segments)
+      const state = await readState(tabId)
+      if (state?.context.kind === 'vod'
+        && state.context.identity.bvid === bvid
+        && state.context.identity.cid === cid) {
+        await stopAsrSession()
+        const { transcriptPreview: _preview, ...withoutPreview } = state
+        const next = {
+          ...withoutPreview,
+          transcription: 'inactive' as const,
+          subtitleSource: 'bilibili' as const,
+          subtitleSegments: report.segments.slice(-5000),
+          subtitleIdentity: { bvid, cid },
+        }
+        await writeState(tabId, next)
+        publishState(tabId, next)
+      }
+      return
+    }
+    if (!report.definitiveEmpty) return
+    // Proven absent: reconcile whatever is on file for this identity — stale
+    // tab-state segments and any mislabelled durable transcript alike.
     await client.ensureContent({ identity: context.identity, metadata: context.metadata })
-    await client.syncTranscript(context.identity, 'bilibili', segments)
+    await client.syncTranscript(context.identity, 'bilibili', [])
     const state = await readState(tabId)
     if (state?.context.kind === 'vod'
-      && state.context.identity.bvid === context.identity.bvid
-      && state.context.identity.cid === context.identity.cid) {
-      await stopAsrSession()
-      const { transcriptPreview: _preview, ...withoutPreview } = state
-      const next = {
-        ...withoutPreview,
-        transcription: 'inactive' as const,
-        subtitleSource: 'bilibili' as const,
-        subtitleSegments: segments.slice(-5000),
-        subtitleIdentity: { bvid: context.identity.bvid, cid: context.identity.cid },
-      }
+      && state.context.identity.bvid === bvid
+      && state.context.identity.cid === cid
+      && state.subtitleSource !== 'asr'
+      && state.transcription === 'inactive'
+      && (state.subtitleSegments?.length ?? 0) > 0) {
+      const {
+        subtitleSegments: _segments,
+        subtitleIdentity: _identity,
+        subtitleSource: _source,
+        ...withoutSubtitle
+      } = state
+      const next = { ...withoutSubtitle, transcription: 'inactive' as const }
       await writeState(tabId, next)
       publishState(tabId, next)
     }
-  })().catch(() => undefined)
+  })().catch(() => {
+    verifiedSubtitleIdentities.delete(verifyKey)
+  })
   subtitleSyncs.set(key, current)
   try {
     await current
