@@ -34,3 +34,29 @@ describe('toolbar side-panel opening', () => {
     expect(queueBody).not.toMatch(/tabOperations\.run\([^)]*\)[\s\S]{0,400}?await (?:client|fetch)/)
   })
 })
+
+describe('panel-open bridge recovery', () => {
+  it('re-injects the content bridge instead of demanding a page refresh', async () => {
+    const source = await readFile(join(import.meta.dirname, '..', 'src', 'background', 'index.ts'), 'utf8')
+    expect(source).toContain("chrome.scripting.executeScript({ target: { tabId }, files: ['assets/content.js'] })")
+    // The probe, the injection, and the retry: the clock must recover in one
+    // panel-open without any Bilibili page reload.
+    const timeHandler = source.slice(source.indexOf("if (type === 'MOMENTQ_GET_CURRENT_VIDEO_TIME') {"))
+    expect(timeHandler).toContain('await ensureTabBridge(active.id)')
+    expect(timeHandler.indexOf('readTime')).toBeLessThan(timeHandler.indexOf('await ensureTabBridge'))
+    expect(source).toContain('void ensureTabBridge(tabId)')
+  })
+
+  it('guards the content entry against double registration on re-injection', async () => {
+    const source = await readFile(join(import.meta.dirname, '..', 'src', 'content', 'index.tsx'), 'utf8')
+    expect(source).toContain('__momentqContentBridge')
+    expect(source).toContain('if (bridge.__momentqContentBridge !== true)')
+  })
+
+  it('re-checks a trackless video the moment the panel asks for state', async () => {
+    const source = await readFile(join(import.meta.dirname, '..', 'src', 'background', 'index.ts'), 'utf8')
+    const fastPath = source.slice(source.indexOf('async function readOrResolveState'))
+    expect(fastPath).toContain('void syncBilibiliSubtitle(tabId, stored.context)')
+    expect(fastPath).toContain("stored.subtitleSource !== 'asr'")
+  })
+})

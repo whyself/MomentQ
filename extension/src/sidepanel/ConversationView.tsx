@@ -501,6 +501,18 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
   const asrUnconfigured = asrConfigured === false
     && state !== null
     && (state.subtitleSegments?.length ?? 0) === 0
+  // Subtitle fetches land a few seconds after the panel opens; hold the
+  // warning back so a loading video never flashes "unconfigured" and then
+  // withdraws it.
+  const [asrWarningLatched, setAsrWarningLatched] = useState(false)
+  useEffect(() => {
+    if (!asrUnconfigured) {
+      setAsrWarningLatched(false)
+      return
+    }
+    const timer = window.setTimeout(() => { setAsrWarningLatched(true) }, 3_000)
+    return () => { window.clearTimeout(timer) }
+  }, [asrUnconfigured])
   return (
     <section className={`momentq-conversation ${conversationCss.root}`} data-phase={active ? 'active' : 'hero'}>
       <ContextHeader
@@ -525,7 +537,7 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
           )}
         </div>
       <div className={`${conversationCss.composerSeat} ${active ? '' : conversationCss.composerHero}`}>
-          {asrUnconfigured && (
+          {asrUnconfigured && asrWarningLatched && (
             <div className={chatCss.openError} role="status" data-asr-warning>
               百度语音识别未配置：请打开设置 → 语音识别，填写百度云凭据
             </div>

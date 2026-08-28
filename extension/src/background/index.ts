@@ -294,6 +294,26 @@ async function restoreAsrSession(): Promise<void> {
   }
 }
 
+/**
+ * Tabs opened before an extension reload keep no live content script, which
+ * starves the side panel of the playback clock (and thus the subtitle ticker)
+ * until the page is refreshed. Re-inject on demand instead; the script is
+ * guarded against double registration.
+ */
+async function ensureTabBridge(tabId: number): Promise<boolean> {
+  const alive = await chrome.tabs.sendMessage(tabId, { type: 'MOMENTQ_GET_CURRENT_VIDEO_TIME' })
+    .then(() => true)
+    .catch(() => false)
+  if (alive) return true
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['assets/content.js'] })
+    return true
+  } catch {
+    // Unsupported page (chrome://, discarded tab, no host access).
+    return false
+  }
+}
+
 async function applyContextUnlocked(tabId: number, context: BilibiliContext | null): Promise<MomentQTabState | null> {
   const previous = await readState(tabId)
   const next = reduceTabState(previous, { type: 'SET_CONTEXT', tabId, context })
@@ -467,7 +487,15 @@ async function readOrResolveState(tabId: number): Promise<MomentQTabState | null
   const stored = await readState(tabId)
   const tab = await chrome.tabs.get(tabId).catch(() => null)
   const url = tab?.url
-  if (url !== undefined && stored !== null && sameContentLocation(url, stored.context.url)) return stored
+  if (url !== undefined && stored !== null && sameContentLocation(url, stored.context.url)) {
+    // Opening the panel on a trackless video is itself a re-check trigger;
+    // the sync is deduped and throttled, so this stays cheap.
+    if (stored.context.kind === 'vod' && stored.subtitleSource !== 'asr'
+      && (stored.subtitleSegments?.length ?? 0) === 0) {
+      void syncBilibiliSubtitle(tabId, stored.context)
+    }
+    return stored
+  }
   if (url === undefined || parseBilibiliLocation(url)?.kind !== 'vod') {
     return stored === null ? null : applyContext(tabId, null)
   }
@@ -588,8 +616,17 @@ async function handleRequest(
   if (type === 'MOMENTQ_CAPTURE_CURRENT_FRAME') {
     const active = sender.tab ?? (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]
     if (active?.id !== undefined) {
-      const videoFrame = await chrome.tabs.sendMessage(active.id, { type: 'MOMENTQ_CAPTURE_VIDEO_FRAME' }).catch(() => null)
-      if (typeof videoFrame === 'string' && videoFrame.startsWith('data:image/')) return videoFrame
+      const grabFrame = (): Promise<string | null> => chrome.tabs.sendMessage(active.id!, { type: 'MOMENTQ_CAPTURE_VIDEO_FRAME' })
+        .then((value: unknown) => typeof value === 'string' && value.startsWith('data:image/') ? value : null)
+        .catch(() => null)
+      const videoFrame = await grabFrame()
+      if (videoFrame !== null) return videoFrame
+      // No live bridge: re-inject once, then retry so frame capture works on
+      // tabs that predate an extension reload.
+      if (await ensureTabBridge(active.id)) {
+        const retried = await grabFrame()
+        if (retried !== null) return retried
+      }
     }
     return null
   }
@@ -597,15 +634,27 @@ async function handleRequest(
   if (type === 'MOMENTQ_GET_CURRENT_VIDEO_TIME') {
     const active = sender.tab ?? (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]
     if (active?.id === undefined) return null
-    const value = await chrome.tabs.sendMessage(active.id, { type: 'MOMENTQ_GET_CURRENT_VIDEO_TIME' }).catch(() => null)
-    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
+    const readTime = (): Promise<number | null> => chrome.tabs.sendMessage(active.id!, { type: 'MOMENTQ_GET_CURRENT_VIDEO_TIME' })
+      .then((value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null)
+      .catch(() => null)
+    const value = await readTime()
+    if (value !== null) return value
+    // The playback clock feeds the subtitle ticker; re-injecting the bridge
+    // lets a panel opened on an existing video start ticking without a page
+    // refresh.
+    if (!await ensureTabBridge(active.id)) return null
+    return await readTime()
   }
 
   const tabId = message.tabId
   if (!Number.isSafeInteger(tabId) || typeof tabId !== 'number' || tabId < 0) return null
-  return type === 'MOMENTQ_GET_TAB_STATE'
-    ? readOrResolveState(tabId)
-    : toggleTranscription(tabId)
+  if (type === 'MOMENTQ_GET_TAB_STATE') {
+    // Panel open: recover the content bridge on pre-reload tabs so the
+    // playback clock (and thus subtitles) works without a page refresh.
+    void ensureTabBridge(tabId)
+    return await readOrResolveState(tabId)
+  }
+  return await toggleTranscription(tabId)
 }
 
 chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {

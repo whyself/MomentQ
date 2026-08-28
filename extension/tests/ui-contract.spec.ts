@@ -74,4 +74,11 @@ describe('DSH UI reuse contract', () => {
     expect(content).toContain('MOMENTQ_TOGGLE_CURRENT_TRANSCRIPTION')
     expect(`${control}\n${content}`).not.toContain('sidePanel.open')
   })
+
+  it('latches the unconfigured-ASR warning so a loading video never flashes it', async () => {
+    const view = await source('sidepanel', 'ConversationView.tsx')
+    expect(view).toContain('asrWarningLatched')
+    expect(view).toContain('setAsrWarningLatched(true)')
+    expect(view).toContain('3_000')
+  })
 })

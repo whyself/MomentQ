@@ -20,7 +20,7 @@ describe('extension manifest', () => {
     expect(manifest.manifest_version).toBe(3)
     expect(manifest.background).toEqual({ service_worker: 'assets/background.js', type: 'module' })
     expect(manifest.side_panel.default_path).toBe('sidepanel.html')
-    expect(manifest.permissions).toEqual(expect.arrayContaining(['tabCapture', 'offscreen']))
+    expect(manifest.permissions).toEqual(expect.arrayContaining(['tabCapture', 'offscreen', 'scripting']))
     expect(manifest.host_permissions).toContain('https://api.bilibili.com/*')
     expect(manifest.host_permissions).toContain('https://*.hdslb.com/*')
     expect(manifest.commands['open-side-panel']?.suggested_key?.default).toBe('Alt+Q')
