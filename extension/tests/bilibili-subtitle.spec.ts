@@ -104,4 +104,21 @@ describe('Bilibili subtitle acquisition', () => {
     expect(subtitleTracks(payload([english, ai, native]))[0]).toBe('https://aisubtitle.hdslb.com/native.json')
     expect(subtitleTracks(payload([native, english, ai]))[0]).toBe('https://aisubtitle.hdslb.com/native.json')
   })
+
+  it('ranks Chinese above English above Japanese regardless of official status', () => {
+    const jaOfficial = { lan: 'ja', lan_doc: '日语', ai_type: 0, subtitle_url: '//aisubtitle.hdslb.com/ja.json' }
+    const enAi = { lan: 'en', lan_doc: '英语（自动生成）', ai_type: 1, subtitle_url: '//aisubtitle.hdslb.com/en.json' }
+    const zhAi = { lan: 'ai-zh', lan_doc: '中文（自动翻译）', ai_type: 1, subtitle_url: '//aisubtitle.hdslb.com/zh.json' }
+    const jaAi = { lan: 'ai-ja', lan_doc: '日语（自动生成）', ai_type: 1, subtitle_url: '//aisubtitle.hdslb.com/ai-ja.json' }
+    const payload = (tracks: unknown[]) => ({ data: { subtitle: { subtitles: tracks } } })
+    const expected = [
+      'https://aisubtitle.hdslb.com/zh.json',
+      'https://aisubtitle.hdslb.com/en.json',
+      'https://aisubtitle.hdslb.com/ja.json',
+      'https://aisubtitle.hdslb.com/ai-ja.json',
+    ]
+
+    expect(subtitleTracks(payload([jaOfficial, enAi, zhAi, jaAi]))).toEqual(expected)
+    expect(subtitleTracks(payload([jaAi, zhAi, enAi, jaOfficial]))).toEqual(expected)
+  })
 })

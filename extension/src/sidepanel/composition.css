@@ -85,35 +85,30 @@ body {
   width: 100%;
 }
 
-/* Header crumbs: keep the part visible next to the title instead of letting
- * the vendored overflow-hidden row swallow it. Both shrink with ellipsis and
- * reveal their full text through the title attribute; widening the panel
- * shows more because the caps are proportional, not the upstream 220px. */
+/* Header crumbs: the full title and part stay readable — long text wraps
+ * instead of truncating behind an ellipsis, so no content is locked away. */
 .momentq-conversation .momentq-title-crumb {
   display: block;
   flex: 1 1 40%;
   min-width: 0;
   max-width: none;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .momentq-conversation .momentq-part-crumb {
   display: block;
   flex: 0 1 auto;
   min-width: 3em;
-  max-width: 60%;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  max-width: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .momentq-subtitle-ticker {
   width: min(100%, 720px);
-  max-height: 132px;
   margin: 0 auto 8px;
-  overflow: hidden;
   pointer-events: none;
-  mask-image: linear-gradient(to bottom, transparent 0, black 24%, black 100%);
 }
 
 .momentq-subtitle-track {

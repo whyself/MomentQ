@@ -28,11 +28,16 @@ export function subtitleUrl(value: unknown): string | undefined {
 function subtitleScore(item: RecordValue): number {
   const lan = (text(item.lan) ?? '').toLowerCase()
   const language = `${lan} ${text(item.lan_doc) ?? ''}`.toLowerCase()
-  const chinese = /(^|[-_])zh($|[-_])|中文|中英|简体|繁体/.test(language) ? 1_000 : 0
-  const nativeChinese = /^(zh-cn|zh-hans|zh-sg|zh-tw|zh-hant)$/.test(lan) ? 400 : 0
-  const aiChinese = lan === 'ai-zh' ? 300 : 0
-  const official = item.ai_type === 0 ? 200 : 0
-  return chinese + nativeChinese + aiChinese + official
+  // Fetch priority: Chinese, then English, then Japanese; other languages
+  // follow. A Japanese official track must not beat an English AI track, so
+  // language rank dominates and official status only orders within one
+  // language.
+  const rank = /(^|[-_])zh($|[-_])|中文|中英|简体|繁体/.test(language) ? 0
+    : /(^|[-_])en($|[-_])|英语|英文|english/.test(language) ? 1
+    : /(^|[-_])ja($|[-_])|日语|日文|japanese/.test(language) ? 2
+    : 3
+  const official = item.ai_type === 0 ? 1 : 0
+  return (3 - rank) * 1_000 + official
 }
 
 export function subtitleTracks(value: unknown): string[] {
