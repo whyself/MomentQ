@@ -60,14 +60,20 @@ describe('panel-open bridge recovery', () => {
     expect(fastPath).toContain("stored.subtitleSource !== 'asr'")
   })
 
-  it('machine-translates non-Chinese tracks into the tab state only', async () => {
+  it('stays subscribed to a foreign track until Bilibili ships its ai-zh translation', async () => {
     const source = await readFile(join(import.meta.dirname, '..', 'src', 'background', 'index.ts'), 'utf8')
-    const enrich = source.slice(source.indexOf('async function enrichWithChineseTranslation'))
-    // Gated on language and on a configured model key; never runs otherwise.
-    expect(enrich).toContain('trackNeedsChineseTranslation(segments)')
-    expect(enrich).toContain("loadModelApiKey().catch(() => '')")
-    expect(enrich).toContain("if (apiKey === '') return")
-    // The durable transcript is synced before enrichment, untranslated.
-    expect(source).toContain("void enrichWithChineseTranslation(tabId, { bvid, cid }, segments)")
+    const sync = source.slice(source.indexOf('async function syncBilibiliSubtitle'))
+    // A non-Chinese import must not be marked final: the lazy ai-zh track can
+    // still replace it through the throttled retry and reconcile loops.
+    expect(sync).toContain('trackNeedsChineseTranslation(report.segments)')
+    const reconcile = source.slice(source.indexOf('async function reconcileVideoSubtitles'))
+    expect(reconcile).toContain('trackNeedsChineseTranslation(segments)')
+  })
+
+  it('drives the player menu to surface the built-in translated track', async () => {
+    const source = await readFile(join(import.meta.dirname, '..', 'src', 'content', 'page-bridge.ts'), 'utf8')
+    const click = source.slice(source.indexOf('function requestBilibiliSubtitleLoad'))
+    expect(click).toContain('[data-lan="ai-zh"]')
+    expect(click).toContain('自动翻译')
   })
 })

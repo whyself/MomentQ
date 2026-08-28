@@ -31,10 +31,9 @@ describe('DSH UI reuse contract', () => {
     expect(css).toContain('prefers-reduced-motion')
   })
 
-  it('renders the Chinese translation above a smaller original line', async () => {
-    const view = await source('sidepanel', 'ConversationView.tsx')
-    expect(view).toContain('momentq-subtitle-zh')
-    expect(view).toContain('momentq-subtitle-original')
+  it('renders the ticker with its dissolve mask so history rows scroll away smoothly', async () => {
+    const css = await source('sidepanel', 'composition.css')
+    expect(css).toMatch(/mask-image: linear-gradient/)
   })
 
   it('uses vendored DSH conversation, hero and input CSS modules', async () => {

@@ -109,6 +109,10 @@ body {
   width: min(100%, 720px);
   margin: 0 auto 8px;
   pointer-events: none;
+  /* The scrolling effect: history rows dissolve into the top edge instead of
+   * being cut off when they leave the visible window. */
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 22%, black 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, black 22%, black 100%);
 }
 
 .momentq-subtitle-track {

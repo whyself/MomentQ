@@ -284,33 +284,41 @@ function requestBilibiliSubtitleLoad(snapshot: BilibiliPageSnapshot): void {
   // One forced load per identity: skip when a click attempt already ran or a
   // track result (available or definitive absence) has been posted.
   if (subtitleAutoRequestKey === key || subtitleRequestKey === key) return
-  const itemSelector = '.bpx-player-ctrl-subtitle-language-item[data-lan="ai-zh"]'
-  const clickVisibleItem = (attempt: number): void => {
-    const item = [...document.querySelectorAll<HTMLElement>(itemSelector)].find(node => {
-      const style = window.getComputedStyle(node)
-      const box = node.getBoundingClientRect()
-      return style.display !== 'none' && style.visibility !== 'hidden' && box.width > 0 && box.height > 0
-    })
+  const visible = (node: HTMLElement): boolean => {
+    const style = window.getComputedStyle(node)
+    const box = node.getBoundingClientRect()
+    return style.display !== 'none' && style.visibility !== 'hidden' && box.width > 0 && box.height > 0
+  }
+  // Older players list "中文（自动翻译）" as a subtitle-language item; newer
+  // ones nest it inside the "翻译和字幕转写" panel. Selecting it is what
+  // makes Bilibili generate and expose its own ai-zh track.
+  const findItem = (): HTMLElement | undefined => {
+    const byLan = [...document.querySelectorAll<HTMLElement>('[data-lan="ai-zh"]')].find(visible)
+    if (byLan !== undefined) return byLan
+    return [...document.querySelectorAll<HTMLElement>('[class*="bpx-player"]')]
+      .filter(node => visible(node) && (node.textContent ?? '').trim().startsWith('中文（自动翻译）'))
+      .sort((left, right) => (left.textContent ?? '').length - (right.textContent ?? '').length)[0]
+  }
+  const attempt = (count: number): void => {
+    const item = findItem()
     if (item !== undefined) {
       item.click()
       return
     }
-    if (attempt < 10) window.setTimeout(() => clickVisibleItem(attempt + 1), 150)
+    if (count >= 16) return
+    window.setTimeout(() => attempt(count + 1), 250)
   }
   const button = document.querySelector<HTMLElement>('.bpx-player-ctrl-subtitle')
+    ?? document.querySelector<HTMLElement>('.bpx-player-ctrl-subtitle-translate')
   if (button === null) return
   subtitleAutoRequestKey = key
-  const item = [...document.querySelectorAll<HTMLElement>(itemSelector)].find(node => {
-    const style = window.getComputedStyle(node)
-    const box = node.getBoundingClientRect()
-    return style.display !== 'none' && style.visibility !== 'hidden' && box.width > 0 && box.height > 0
-  })
+  const item = findItem()
   if (item !== undefined) {
     item.click()
     return
   }
   button.click()
-  clickVisibleItem(0)
+  attempt(0)
 }
 
 function installBridge(): void {

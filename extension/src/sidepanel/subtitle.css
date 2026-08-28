@@ -32,23 +32,6 @@
   animation: momentq-subtitle-current-in 220ms ease-out both;
 }
 
-/* Translated tracks: the Chinese line carries the emphasis, the original
- * stays readable underneath in a smaller secondary line. */
-.momentq-subtitle-zh {
-  display: block;
-}
-
-.momentq-subtitle-original {
-  display: block;
-  font-size: 12.5px;
-  letter-spacing: 0;
-}
-
-.momentq-subtitle-line.is-current .momentq-subtitle-original {
-  color: var(--dsw-alias-label-secondary);
-  font-weight: 400;
-}
-
 @keyframes momentq-subtitle-current-in {
   from {
     opacity: 0;

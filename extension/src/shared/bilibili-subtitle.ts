@@ -97,8 +97,24 @@ export function parseSubtitleIndex(value: unknown): SubtitleIndex | null {
   }
 }
 
-export function normalizeSubtitleBody(value: unknown): BilibiliSubtitleSegment[] {
-  const root = record(value)
+/**
+ * True when a track's text is not Simplified Chinese. Bilibili generates its
+ * own "中文（自动翻译）" (ai-zh) track lazily for foreign videos, so a
+ * non-Chinese import must stay retryable until the translated track appears.
+ */
+export function trackNeedsChineseTranslation(
+  segments: readonly BilibiliSubtitleSegment[],
+): boolean {
+  const sample = segments.slice(0, 80).map(segment => segment.text).join('')
+  const compact = sample.replace(/\s+/g, '')
+  if ([...compact].length < 12) return false
+  // Kana anywhere means Japanese: a Han share alone cannot separate the two.
+  if (/[\u3040-\u30ff\u31f0-\u31ff]/.test(sample)) return true
+  const han = (sample.match(/[\u4e00-\u9fff]/g) ?? []).length
+  return han / [...compact].length < 0.25
+}
+
+export function normalizeSubtitleBody(value: unknown): BilibiliSubtitleSegment[] {  const root = record(value)
   const data = record(root?.data)
   const subtitle = record(root?.subtitle)
   const body = Array.isArray(root?.body) ? root.body

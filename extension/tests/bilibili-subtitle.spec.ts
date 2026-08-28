@@ -1,6 +1,33 @@
 import { describe, expect, it } from 'vitest'
 import { fetchBilibiliSubtitle } from '../src/background/bilibili-subtitle'
-import { parseSubtitleIndex, subtitleTracks } from '../src/shared/bilibili-subtitle'
+import { parseSubtitleIndex, subtitleTracks, trackNeedsChineseTranslation } from '../src/shared/bilibili-subtitle'
+
+const segment = (text: string) => ({ start: 0, end: 1, text })
+
+describe('subtitle language gating', () => {
+  it('treats Chinese tracks as final', () => {
+    expect(trackNeedsChineseTranslation([
+      segment('大多数人可能会本能地想到这个闪避其实很好躲'),
+      segment('下意识认为这个闪避躲不掉，其实只要预判就行'),
+    ])).toBe(false)
+  })
+
+  it('keeps English and Japanese tracks waiting for the ai-zh translation', () => {
+    expect(trackNeedsChineseTranslation([
+      segment('Most folks might instinctively think this dodge is easy to read'),
+      segment('but it actually punishes anyone who panics'),
+    ])).toBe(true)
+    expect(trackNeedsChineseTranslation([
+      segment('「無敵じゃん」とか言うけど、この回避は実は割りやすいんだよな'),
+      segment('一個使うとエネルギーが三分の二減るし'),
+    ])).toBe(true)
+  })
+
+  it('leaves near-empty tracks alone', () => {
+    expect(trackNeedsChineseTranslation([segment('Hi.')])).toBe(false)
+    expect(trackNeedsChineseTranslation([])).toBe(false)
+  })
+})
 
 describe('Bilibili subtitle acquisition', () => {
   it('selects the Chinese track and normalizes subtitle JSON', async () => {
