@@ -1,8 +1,17 @@
-export const ASR_PROVIDERS = ['baidu'] as const
+/**
+ * ASR providers are descriptors, not extension code: recognition runs inside
+ * the local companion, so adding a cloud vendor or a local model is a one-line
+ * entry here plus a companion-side implementation. The extension never holds
+ * provider credentials.
+ */
+export const ASR_PROVIDERS = [
+  { id: 'baidu', label: '百度智能云' },
+] as const
+
 export const SUBTITLE_MODES = ['append', 'replace'] as const
 export const THEME_PREFERENCES = ['light', 'dark', 'system'] as const
 
-export type AsrProvider = typeof ASR_PROVIDERS[number]
+export type AsrProviderId = (typeof ASR_PROVIDERS)[number]['id']
 export type SubtitleMode = typeof SUBTITLE_MODES[number]
 export type ThemePreference = typeof THEME_PREFERENCES[number]
 
@@ -10,7 +19,7 @@ export type ExtensionSettings = {
   version: 2
   hostBaseUrl: string
   companionBaseUrl: string
-  asrProvider: AsrProvider
+  asrProvider: AsrProviderId
   subtitleMode: SubtitleMode
   autoConnect: boolean
   theme: ThemePreference
@@ -48,6 +57,8 @@ function memberOf<T extends string>(value: unknown, values: readonly T[], fallba
     : fallback
 }
 
+const ASR_PROVIDER_IDS = ASR_PROVIDERS.map(provider => provider.id)
+
 export function sanitizeSettings(value: unknown): ExtensionSettings {
   const source = isRecord(value) ? value : {}
   const sanitizedHost = localHttpUrl(source.hostBaseUrl, DEFAULT_SETTINGS.hostBaseUrl)
@@ -58,7 +69,7 @@ export function sanitizeSettings(value: unknown): ExtensionSettings {
     version: 2,
     hostBaseUrl,
     companionBaseUrl: localHttpUrl(source.companionBaseUrl, DEFAULT_SETTINGS.companionBaseUrl),
-    asrProvider: memberOf(source.asrProvider, ASR_PROVIDERS, DEFAULT_SETTINGS.asrProvider),
+    asrProvider: memberOf(source.asrProvider, ASR_PROVIDER_IDS, DEFAULT_SETTINGS.asrProvider),
     subtitleMode: memberOf(source.subtitleMode, SUBTITLE_MODES, DEFAULT_SETTINGS.subtitleMode),
     autoConnect: typeof source.autoConnect === 'boolean' ? source.autoConnect : DEFAULT_SETTINGS.autoConnect,
     theme: memberOf(source.theme, THEME_PREFERENCES, DEFAULT_SETTINGS.theme),

@@ -53,7 +53,7 @@ BV 号，再由后台调用 B 站公开 `x/web-interface/view` 接口读取并�
 
 - 通用：DSH Host 地址（当前开发默认 `http://127.0.0.1:3182`）与模型 API Key
 - 本地 companion 地址，默认 `http://127.0.0.1:3090`
-- ASR 服务商预留（当前为百度智能云）
+- ASR 服务商（云端或本地模型，经本地 companion 接入；当前预留百度智能云）
 - 字幕写入方式
 - 自动连接行为
 - DSH 原版浅色、深色、跟随系统外观设置
@@ -62,9 +62,10 @@ BV 号，再由后台调用 B 站公开 `x/web-interface/view` 接口读取并�
 扩展自己的 `chrome.storage.local`，以便重新打开设置时回填；密码框显隐使用浏览器
 原生符号控件。DSH
 凭据服务仍不提供明文回读，因此升级前已经只存在于 Host 的密钥需要重新输入
-一次。扩展不会接收或保存百度 API Key、Secret
-Key、Access Token 或密码。百度鉴权、音频捕获/转码、流式 ASR 和 Native Messaging
-尚未实现，后续由本地 `companion/` 负责；因此当前播放/暂停按钮只切换扩展状态，
+一次。扩展不会接收或保存任何 ASR 服务商的 API Key、Secret Key、Access
+Token 或密码：语音识别 Provider（云端或本地模型）在本地 `companion/`
+内以可插拔接口实现，扩展只传递 companion 地址与 provider 选择。音频捕获/转码、
+流式 ASR 和 Native Messaging 尚未实现；因此当前播放/暂停按钮只切换扩展状态，
 不代表真实 ASR 已开始工作。
 
 ## 原版页面参考

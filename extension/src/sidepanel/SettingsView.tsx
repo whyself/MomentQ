@@ -6,7 +6,8 @@ import {
 } from '../dsh/primitives'
 import type { MenuEntry } from '../dsh/primitives'
 import { sanitizeSettings } from '../shared/settings'
-import type { ExtensionSettings, ThemePreference } from '../shared/settings'
+import { ASR_PROVIDERS } from '../shared/settings'
+import type { AsrProviderId, ExtensionSettings, ThemePreference } from '../shared/settings'
 import { MomentQClient } from '../shared/host-client'
 import { loadModelApiKey, saveModelApiKey, saveSettings } from '../shared/settings-store'
 import { SettingsRoot as UpstreamSettingsRoot } from '../vendor/deepseek-harness/packages/client/ui-settings-general/src/client/SettingsRoot.tsx'
@@ -166,15 +167,15 @@ function AsrSection({ draft, setDraft, saving, saveError, onSave }: {
 }) {
   return (
     <div>
-      <Row title="伴随服务地址" description="音频捕获与 ASR 由本地 companion 提供。">
+      <Row title="伴随服务地址" description="音频捕获与语音识别都在本地 companion 内完成，密钥不进入扩展。">
         <Input value={draft.companionBaseUrl} onChange={event => { setDraft({ ...draft, companionBaseUrl: event.target.value }) }} />
       </Row>
       <SelectRow
         title="ASR 服务商"
-        description="当前预留百度智能云；扩展不保存 API Key 或 Secret Key。"
+        description="云端或本地模型均按服务商接入 companion，可插拔替换。"
         value={draft.asrProvider}
-        items={[{ id: 'baidu', label: '百度智能云' }]}
-        onSelect={() => { setDraft({ ...draft, asrProvider: 'baidu' }) }}
+        items={ASR_PROVIDERS.map(({ id, label }) => ({ id, label }))}
+        onSelect={id => { setDraft({ ...draft, asrProvider: id as AsrProviderId }) }}
       />
       <SelectRow
         title="字幕写入方式"
