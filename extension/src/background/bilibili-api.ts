@@ -45,50 +45,95 @@ function selectApiPage(
   }
 }
 
-export async function resolveSnapshotViaBilibiliApi(
+export type BilibiliContextResolver = (
   snapshot: BilibiliPageSnapshot,
-  request: typeof fetch = fetch,
-): Promise<BilibiliContext | null> {
-  const existing = normalizeBilibiliContext(snapshot)
-  if (existing !== null) return existing
+) => Promise<BilibiliContext | null>
 
-  const location = parseBilibiliLocation(snapshot.url)
-  if (location?.kind !== 'vod') return null
+/**
+ * Resolved contexts are immutable per bvid, and Bilibili rate-limits the
+ * view endpoint hard. On SPA navigations the page's __INITIAL_STATE__ can
+ * stay stale indefinitely, so resolution retries on every debounced page
+ * publish — cache successes forever and throttle repeated attempts for the
+ * same bvid, or the request storm trips the limit and the side panel sticks
+ * to the previous video until a full page reload.
+ */
+export const CONTEXT_CACHE_LIMIT = 50
+export const DEFAULT_VIEW_RETRY_INTERVAL_MS = 5_000
 
-  let payload: unknown
-  try {
-    const response = await request(`https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(location.bvid)}`)
-    if (!response.ok) return null
-    payload = await response.json()
-  } catch {
-    return null
+export function createBilibiliContextResolver(options: {
+  request?: typeof fetch
+  now?: () => number
+  retryIntervalMs?: number
+} = {}): BilibiliContextResolver {
+  const request = options.request ?? fetch
+  const now = options.now ?? Date.now
+  const retryIntervalMs = options.retryIntervalMs ?? DEFAULT_VIEW_RETRY_INTERVAL_MS
+  const cache = new Map<string, BilibiliContext>()
+  const lastAttempts = new Map<string, number>()
+
+  return async (snapshot: BilibiliPageSnapshot): Promise<BilibiliContext | null> => {
+    const existing = normalizeBilibiliContext(snapshot)
+    if (existing !== null) return existing
+
+    const location = parseBilibiliLocation(snapshot.url)
+    if (location?.kind !== 'vod') return null
+
+    const cached = cache.get(location.bvid)
+    if (cached !== undefined) {
+      cache.delete(location.bvid)
+      cache.set(location.bvid, cached)
+      return cached
+    }
+
+    const lastAttempt = lastAttempts.get(location.bvid)
+    const nowMs = now()
+    if (lastAttempt !== undefined && nowMs - lastAttempt < retryIntervalMs) return null
+    lastAttempts.set(location.bvid, nowMs)
+
+    let payload: unknown
+    try {
+      const response = await request(`https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(location.bvid)}`)
+      if (!response.ok) return null
+      payload = await response.json()
+    } catch {
+      return null
+    }
+
+    const envelope = record(payload)
+    const data = record(envelope?.data)
+    const owner = record(data?.owner)
+    if (envelope?.code !== 0 || data === null || data.bvid !== location.bvid) return null
+
+    const pages = Array.isArray(data.pages) ? data.pages : []
+    const selected = selectApiPage(pages, location.requestedPart, id(data.cid))
+    const title = string(data.title) ?? snapshot.title
+    const creatorName = string(owner?.name) ?? snapshot.creator?.name
+    const creatorId = id(owner?.mid) ?? snapshot.creator?.id
+    const pageCount = pages.length > 0 ? pages.length : positiveInteger(data.videos)
+
+    const context = normalizeBilibiliContext({
+      ...snapshot,
+      ...(title === undefined ? {} : { title }),
+      ...(creatorName === undefined ? {} : { creator: {
+        ...(creatorId === undefined ? {} : { id: creatorId }),
+        name: creatorName,
+      } }),
+      vod: {
+        bvid: location.bvid,
+        ...(selected.cid === undefined ? {} : { cid: selected.cid }),
+        ...(selected.pageNumber === undefined ? {} : { pageNumber: selected.pageNumber }),
+        ...(pageCount === undefined ? {} : { pageCount }),
+        ...(selected.partTitle === undefined ? {} : { partTitle: selected.partTitle }),
+      },
+    })
+    if (context === null) return null
+    cache.set(location.bvid, context)
+    if (cache.size > CONTEXT_CACHE_LIMIT) {
+      const oldest = cache.keys().next().value
+      if (oldest !== undefined) cache.delete(oldest)
+    }
+    return context
   }
-
-  const envelope = record(payload)
-  const data = record(envelope?.data)
-  const owner = record(data?.owner)
-  if (envelope?.code !== 0 || data === null || data.bvid !== location.bvid) return null
-
-  const pages = Array.isArray(data.pages) ? data.pages : []
-  const selected = selectApiPage(pages, location.requestedPart, id(data.cid))
-  const title = string(data.title) ?? snapshot.title
-  const creatorName = string(owner?.name) ?? snapshot.creator?.name
-  const creatorId = id(owner?.mid) ?? snapshot.creator?.id
-  const pageCount = pages.length > 0 ? pages.length : positiveInteger(data.videos)
-
-  return normalizeBilibiliContext({
-    ...snapshot,
-    ...(title === undefined ? {} : { title }),
-    ...(creatorName === undefined ? {} : { creator: {
-      ...(creatorId === undefined ? {} : { id: creatorId }),
-      name: creatorName,
-    } }),
-    vod: {
-      bvid: location.bvid,
-      ...(selected.cid === undefined ? {} : { cid: selected.cid }),
-      ...(selected.pageNumber === undefined ? {} : { pageNumber: selected.pageNumber }),
-      ...(pageCount === undefined ? {} : { pageCount }),
-      ...(selected.partTitle === undefined ? {} : { partTitle: selected.partTitle }),
-    },
-  })
 }
+
+export const resolveSnapshotViaBilibiliApi: BilibiliContextResolver = createBilibiliContextResolver()
