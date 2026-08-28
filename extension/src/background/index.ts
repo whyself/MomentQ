@@ -470,8 +470,11 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
       await writeState(tabId, next)
       publishState(tabId, next)
     })
-  })().catch(() => {
+  })().catch((error: unknown) => {
     subtitleRetryNotBefore.delete(verifyKey)
+    // A dead DSH Host used to vanish here silently: no subtitles and not
+    // even the diagnostic. Surface whatever failed so the panel can say why.
+    void writeProbeResult(tabId, bvid, cid, `同步失败：${error instanceof Error ? error.message : String(error)}`)
   })
   subtitleSyncs.set(key, current)
   try {

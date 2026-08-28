@@ -28,7 +28,8 @@ export async function fetchBilibiliSubtitle(
     let definitiveEmpty = false
     let diagnostic: string | null = null
     for (const indexUrl of indexUrls) {
-      const indexResponse = await request(indexUrl, { credentials: 'include' })
+      // A stalled connection would park the whole pipeline forever; bound it.
+      const indexResponse = await request(indexUrl, { credentials: 'include', signal: AbortSignal.timeout(10_000) })
       if (!indexResponse.ok) {
         diagnostic = `索引 HTTP ${indexResponse.status}`
         continue
@@ -41,7 +42,7 @@ export async function fetchBilibiliSubtitle(
         ? `轨道 ${index.tracks.length} 条: ${index.trackLabels.slice(0, 4).join(', ')}`
         : index.needLogin ? '无轨道（B 站提示字幕需登录生成）' : '无轨道'
       for (const url of index.tracks) {
-        const response = await request(url, { credentials: 'include' })
+        const response = await request(url, { credentials: 'include', signal: AbortSignal.timeout(10_000) })
         if (!response.ok) continue
         const segments = normalizeSubtitleBody(await response.json())
         if (segments.length > 0) return { segments, definitiveEmpty: false, diagnostic: `${diagnostic}，已取到 ${segments.length} 行` }

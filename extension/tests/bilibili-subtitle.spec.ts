@@ -64,7 +64,7 @@ describe('Bilibili subtitle acquisition', () => {
       'https://api.bilibili.com/x/player/wbi/v2?bvid=BV1xx&cid=42',
       'https://aisubtitle.hdslb.com/zh.json',
     ])
-    expect(init).toEqual([
+    expect(init).toMatchObject([
       { credentials: 'include' },
       { credentials: 'include' },
     ])

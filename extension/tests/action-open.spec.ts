@@ -118,5 +118,15 @@ describe('panel-open bridge recovery', () => {
     // A proven-empty probe must not erase ASR finals for a trackless video.
     const sync = background.slice(background.indexOf('async function syncBilibiliSubtitle'))
     expect(sync).toContain('asrFinals')
+    // A dead DSH Host must surface in the panel, not vanish silently.
+    expect(sync).toContain('同步失败：')
+    // Dead-context chrome calls throw synchronously; every send is guarded.
+    const content = await readFile(join(import.meta.dirname, '..', 'src', 'content', 'index.tsx'), 'utf8')
+    expect(content).toContain('function runtimeSend')
+    const guard = content.slice(content.indexOf('function runtimeSend'))
+    expect(guard.slice(0, guard.indexOf('}') + 1)).toContain('chrome.runtime.sendMessage')
+    // No unguarded sends outside the helper.
+    expect(content.slice(content.indexOf('}', content.indexOf('function runtimeSend')) + 1))
+      .not.toMatch(/chrome\.runtime\.sendMessage\(/)
   })
 })

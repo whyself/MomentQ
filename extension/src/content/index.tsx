@@ -29,9 +29,20 @@ if (bridge.__momentqContentBridge !== true) {
     return candidates[0]?.video ?? null
   }
 
+  // After an extension reload this script's context dies while its listeners
+  // keep running; chrome.runtime.* then throws synchronously, and a `.catch`
+  // chain never attaches. Route every send through this guard.
+  function runtimeSend(message: unknown): Promise<unknown> | null {
+    try {
+      return chrome.runtime.sendMessage(message)
+    } catch {
+      return null
+    }
+  }
+
   const control = mountTranscriptionControl(async () => {
-    const state = await chrome.runtime.sendMessage({ type: 'MOMENTQ_TOGGLE_CURRENT_TRANSCRIPTION' })
-      .catch(() => null) as MomentQTabState | null
+    const reply = runtimeSend({ type: 'MOMENTQ_TOGGLE_CURRENT_TRANSCRIPTION' })
+    const state = await (reply ?? Promise.resolve(null)) as MomentQTabState | null
     control.update(state)
   })
 
@@ -42,11 +53,12 @@ if (bridge.__momentqContentBridge !== true) {
     if (!event.altKey || !event.shiftKey || key !== 'c') return
     event.preventDefault()
     event.stopPropagation()
-    void chrome.runtime.sendMessage({ type: 'MOMENTQ_CAPTURE_CURRENT_FRAME' }).then((data: unknown) => {
+    const pending = runtimeSend({ type: 'MOMENTQ_CAPTURE_CURRENT_FRAME' })
+    void pending?.then((data: unknown) => {
       if (typeof data === 'string' && data.startsWith('data:image/')) {
-        void chrome.runtime.sendMessage({ type: 'MOMENTQ_FRAME_CAPTURED', dataUrl: data }).catch(() => {})
+        void runtimeSend({ type: 'MOMENTQ_FRAME_CAPTURED', dataUrl: data })
       }
-    }).catch(() => {})
+    })
   }, true)
 
   window.addEventListener('message', (event: MessageEvent<unknown>) => {
@@ -54,14 +66,15 @@ if (bridge.__momentqContentBridge !== true) {
       || (!isPageMessageEnvelope(event.data) && !isPageSubtitleTracksMessageEnvelope(event.data))) return
 
     if (isPageSubtitleTracksMessageEnvelope(event.data)) {
-      void chrome.runtime.sendMessage(event.data).catch(() => {})
+      void runtimeSend(event.data)
       return
     }
 
     const message = pageSnapshotToRuntimeMessage(event.data.payload)
     if (message === null) return
-    void chrome.runtime.sendMessage(message).then((state: MomentQTabState | null) => {
-      control.update(state)
+    const pending = runtimeSend(message)
+    void pending?.then(value => {
+      control.update(value as MomentQTabState | null)
     }).catch(() => {
       // The extension may be reloaded while an already-injected content script is alive.
     })

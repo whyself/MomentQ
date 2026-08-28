@@ -103,10 +103,14 @@ function SubtitleTicker({ state, playbackTime }: { state: MomentQTabState | null
   // Render only the visible window. Keeping hundreds of transparent rows in
   // the DOM made each 250 ms state update recalculate a large scrollHeight;
   // that is visually indistinguishable from subtitles jumping up and down.
-  const diagnostic = !subtitleMatches || segments.length === 0
-    ? state?.context.kind === 'vod' && state.subtitleSource !== 'asr'
-      ? state.subtitleDiagnostic
-      : undefined
+  // The probe diagnostic is hidden only while a live recognition session
+  // runs or ASR finals are on screen; a failed session left the 'asr'
+  // provenance with no finals, and that must not blank the panel.
+  const liveAsr = state?.transcription !== 'inactive'
+  const asrFinalsShown = state?.subtitleSource === 'asr' && segments.length > 0
+  const diagnostic = state?.context.kind === 'vod' && !liveAsr && !asrFinalsShown
+    && (!subtitleMatches || segments.length === 0)
+    ? state.subtitleDiagnostic
     : undefined
   if (window === null && (preview === undefined || preview === '')) {
     if (diagnostic !== undefined) {

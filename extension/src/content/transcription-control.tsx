@@ -68,7 +68,13 @@ export function mountTranscriptionControl(onToggle: () => void | Promise<void>):
 } {
   const host = document.createElement('div')
   host.id = 'momentq-transcription-control'
-  host.dataset.momentqVersion = chrome.runtime.getManifest().version
+  // A pre-reload script instance still runs this code path on some events;
+  // reading the manifest from a dead context throws synchronously.
+  try {
+    host.dataset.momentqVersion = chrome.runtime.getManifest().version
+  } catch {
+    /* the orphan is retired below anyway */
+  }
   // A tab that predates an extension reload keeps the previous script's
   // control alive but orphaned (its runtime context is dead). Mounting a
   // fresh control must retire it, or two floating balls pile up.
