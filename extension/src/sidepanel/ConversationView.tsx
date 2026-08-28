@@ -77,7 +77,7 @@ function TranscriptionToggle({ state, asrConfigured, onToggle }: {
   const hint = asrConfigured === false ? '（百度云未配置）' : ''
   return (
     <Button
-      variant="toolbar"
+      variant="ghost"
       size="sm"
       aria-label={`${label}${hint}`}
       title={state.transcriptionError !== undefined
@@ -523,6 +523,11 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
           : <TranscriptionToggle state={state} asrConfigured={asrConfigured ?? null} onToggle={onToggleTranscription} />}
       />
       <div className={conversationCss.scrollBody}>
+        {asrUnconfigured && asrWarningLatched && (
+          <div className={`momentq-top-warning ${chatCss.openError}`} role="status" data-asr-warning>
+            百度语音识别未配置：请打开设置 → 语音识别，填写百度云凭据
+          </div>
+        )}
         <div className={conversationCss.viewArea}>
           {active ? <ConversationTranscript entries={entries} pending={pending} error={error} /> : (
             <div className={heroCss.root}>
@@ -537,11 +542,6 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
           )}
         </div>
       <div className={`${conversationCss.composerSeat} ${active ? '' : conversationCss.composerHero}`}>
-          {asrUnconfigured && asrWarningLatched && (
-            <div className={chatCss.openError} role="status" data-asr-warning>
-              百度语音识别未配置：请打开设置 → 语音识别，填写百度云凭据
-            </div>
-          )}
           <SubtitleTicker state={state} playbackTime={playbackTime} />
           {state?.transcriptionError !== undefined && (
             <div className={chatCss.openError} role="alert" data-transcription-error>
