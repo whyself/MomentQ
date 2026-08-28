@@ -20,8 +20,17 @@ describe('toolbar side-panel opening', () => {
 
   it('resolves a missing VOD state when the opened side panel queries its tab', async () => {
     const source = await readFile(join(import.meta.dirname, '..', 'src', 'background', 'index.ts'), 'utf8')
-    expect(source).toContain('readOrResolveStateUnlocked(tabId)')
+    expect(source).toContain('readOrResolveState(tabId)')
     expect(source).toContain('resolveCurrentVodContext(url')
     expect(source).toContain('resolveSnapshotViaBilibiliApi({ url: currentUrl })')
+  })
+
+  it('keeps network resolution outside the per-tab operation queue', async () => {
+    const source = await readFile(join(import.meta.dirname, '..', 'src', 'background', 'index.ts'), 'utf8')
+    // A stalled request inside the queue used to freeze the tab on its
+    // previous video until restart; only fast local state work may be queued.
+    const queueBody = source.slice(source.indexOf('async function applyContextUnlocked'))
+    expect(queueBody).toContain('void syncBilibiliSubtitle(tabId, context)')
+    expect(queueBody).not.toMatch(/tabOperations\.run\([^)]*\)[\s\S]{0,400}?await (?:client|fetch)/)
   })
 })

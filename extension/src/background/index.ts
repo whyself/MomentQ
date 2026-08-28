@@ -30,6 +30,10 @@ import { loadSettings } from '../shared/settings-store'
 type WorkerRequest = PageContextRuntimeMessage | ResolvePageSnapshotMessage | GetTabStateMessage | ToggleTranscriptionMessage | ToggleCurrentTranscriptionMessage | CaptureCurrentFrameMessage | GetCurrentVideoTimeMessage | PageSubtitleTracksMessageEnvelope | AsrStartFromPanelMessage | AsrEventMessage | AsrSessionMessage
 
 const storageKey = (tabId: number) => `tab:${tabId}`
+// The queue serializes fast local state mutations only. Network calls never
+// run inside it: a stalled Bilibili/Host request used to block every later
+// operation for the tab, freezing the side panel on a previous video until a
+// restart.
 const tabOperations = new TabOperationQueue()
 const subtitleSyncs = new Map<string, Promise<void>>()
 const publishRevisions = new Map<number, number>()
@@ -164,20 +168,27 @@ async function deactivateTranscription(tabId: number, state: MomentQTabState, er
  * reject without a user gesture.
  */
 async function beginTranscription(tabId: number, streamId: string | undefined): Promise<MomentQTabState | null> {
-  return await tabOperations.run(tabId, async () => {
-    const state = await readState(tabId)
-    if (state === null || state.transcription !== 'inactive') return await readState(tabId)
-    const ownedBySubtitles = state.subtitleSource !== 'asr'
-      && (state.subtitleSegments?.length ?? 0) > 0
-    if (ownedBySubtitles) return state
-    try {
-      const settings = await loadSettings()
-      const resolvedStreamId = streamId ?? await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId })
-      // The content directory must exist before the companion persists rows.
-      const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
-      await client.ensureContent({ identity: state.context.identity, metadata: state.context.metadata })
-      await ensureOffscreenDocument()
-      const { transcriptPreview: _preview, transcriptionError: _error, ...withoutAsrUi } = state
+  const initial = await readState(tabId)
+  if (initial === null || initial.transcription !== 'inactive') return await readState(tabId)
+  const ownedBySubtitles = initial.subtitleSource !== 'asr'
+    && (initial.subtitleSegments?.length ?? 0) > 0
+  if (ownedBySubtitles) return initial
+  try {
+    const settings = await loadSettings()
+    const resolvedStreamId = streamId ?? await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId })
+    // The content directory must exist before the companion persists rows.
+    // Network stays outside the per-tab queue; the queued commit below only
+    // re-validates and writes local state.
+    const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
+    await client.ensureContent({ identity: initial.context.identity, metadata: initial.context.metadata })
+    await ensureOffscreenDocument()
+    return await tabOperations.run(tabId, async () => {
+      const current = await readState(tabId)
+      if (current === null || current.transcription !== 'inactive') return await readState(tabId)
+      const blockedNow = current.subtitleSource !== 'asr'
+        && (current.subtitleSegments?.length ?? 0) > 0
+      if (blockedNow) return current
+      const { transcriptPreview: _preview, transcriptionError: _error, ...withoutAsrUi } = current
       const next: MomentQTabState = {
         ...withoutAsrUi,
         transcription: 'active',
@@ -190,15 +201,16 @@ async function beginTranscription(tabId: number, streamId: string | undefined): 
         type: 'MOMENTQ_ASR_START',
         tabId,
         streamId: resolvedStreamId,
-        identity: state.context.identity,
+        identity: current.context.identity,
         companionBaseUrl: settings.companionBaseUrl,
       })
       return await readState(tabId)
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
-      return await deactivateTranscription(tabId, state, `无法开始转录：${reason}`)
-    }
-  })
+    })
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    const state = await readState(tabId) ?? initial
+    return await tabOperations.run(tabId, () => deactivateTranscription(tabId, state, `无法开始转录：${reason}`))
+  }
 }
 
 async function applyAsrEvent(message: AsrEventMessage): Promise<void> {
@@ -288,16 +300,20 @@ async function applyContextUnlocked(tabId: number, context: BilibiliContext | nu
   await writeState(tabId, next)
   if (JSON.stringify(previous) !== JSON.stringify(next)) publishState(tabId, next)
   if (context?.kind === 'vod') {
-    // The authoritative check runs once per content identity regardless of
-    // what the tab state already holds, so stale or mislabelled segments are
-    // reconciled against Bilibili instead of living forever.
-    await syncBilibiliSubtitle(tabId, context)
+    // Detached: the authoritative Bilibili check runs on its own so a slow
+    // request can never delay the next context switch for this tab.
+    void syncBilibiliSubtitle(tabId, context)
   }
   return await readState(tabId)
 }
 
+function applyContext(tabId: number, context: BilibiliContext | null): Promise<MomentQTabState | null> {
+  return tabOperations.run(tabId, () => applyContextUnlocked(tabId, context))
+}
+
 const verifiedSubtitleIdentities = new Set<string>()
 
+/** Authoritative Bilibili subtitle check; runs outside the per-tab queue. */
 async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliContext, { kind: 'vod' }>): Promise<void> {
   const { bvid, cid } = context.identity
   // One authoritative check per content identity; in-flight dedupe is scoped
@@ -311,44 +327,37 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
   const current = (async (): Promise<void> => {
     const report = await fetchBilibiliSubtitle(bvid, cid)
     verifiedSubtitleIdentities.add(verifyKey)
+    if (report.segments === null && !report.definitiveEmpty) return
     const settings = await loadSettings()
     const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
-    if (report.segments !== null && report.segments.length > 0) {
-      // Never erase a valid durable transcript before the replacement track
-      // has been fetched and validated. A temporary API failure must not make
-      // an existing session lose all subtitles.
-      await client.ensureContent({ identity: context.identity, metadata: context.metadata })
-      await client.syncTranscript(context.identity, 'bilibili', report.segments)
+    const segments = report.segments ?? []
+    // Never erase a valid durable transcript before the replacement track has
+    // been fetched and validated; a proven absence reconciles whatever is on
+    // file for this identity — stale tab-state segments and a mislabelled
+    // durable transcript alike.
+    await client.ensureContent({ identity: context.identity, metadata: context.metadata })
+    await client.syncTranscript(context.identity, 'bilibili', segments)
+    await tabOperations.run(tabId, async () => {
       const state = await readState(tabId)
-      if (state?.context.kind === 'vod'
-        && state.context.identity.bvid === bvid
-        && state.context.identity.cid === cid) {
+      if (state?.context.kind !== 'vod'
+        || state.context.identity.bvid !== bvid
+        || state.context.identity.cid !== cid) return
+      if (segments.length > 0) {
         await stopAsrSession()
         const { transcriptPreview: _preview, ...withoutPreview } = state
         const next = {
           ...withoutPreview,
           transcription: 'inactive' as const,
           subtitleSource: 'bilibili' as const,
-          subtitleSegments: report.segments.slice(-5000),
+          subtitleSegments: segments.slice(-5000),
           subtitleIdentity: { bvid, cid },
         }
         await writeState(tabId, next)
         publishState(tabId, next)
+        return
       }
-      return
-    }
-    if (!report.definitiveEmpty) return
-    // Proven absent: reconcile whatever is on file for this identity — stale
-    // tab-state segments and any mislabelled durable transcript alike.
-    await client.ensureContent({ identity: context.identity, metadata: context.metadata })
-    await client.syncTranscript(context.identity, 'bilibili', [])
-    const state = await readState(tabId)
-    if (state?.context.kind === 'vod'
-      && state.context.identity.bvid === bvid
-      && state.context.identity.cid === cid
-      && state.subtitleSource !== 'asr'
-      && state.transcription === 'inactive'
-      && (state.subtitleSegments?.length ?? 0) > 0) {
+      if (state.subtitleSource === 'asr' || state.transcription !== 'inactive') return
+      if ((state.subtitleSegments?.length ?? 0) === 0) return
       const {
         subtitleSegments: _segments,
         subtitleIdentity: _identity,
@@ -358,7 +367,7 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
       const next = { ...withoutSubtitle, transcription: 'inactive' as const }
       await writeState(tabId, next)
       publishState(tabId, next)
-    }
+    })
   })().catch(() => {
     verifiedSubtitleIdentities.delete(verifyKey)
   })
@@ -370,6 +379,7 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
   }
 }
 
+/** Page-world track import; network runs outside the per-tab queue. */
 async function syncPageSubtitleTracks(tabId: number, message: PageSubtitleTracksMessageEnvelope): Promise<void> {
   const state = await readState(tabId)
   if (state?.context.kind !== 'vod'
@@ -378,24 +388,27 @@ async function syncPageSubtitleTracks(tabId: number, message: PageSubtitleTracks
   // While recognition owns this content's transcript, neither a proven
   // absence nor a late track may wipe or replace its accumulated rows.
   if (state.subtitleSource === 'asr' || state.transcription !== 'inactive') return
+  const context = state.context
+  const settings = await loadSettings()
+  const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
   if (message.payload.status === 'absent') {
-    const settings = await loadSettings()
-    const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
-    await client.ensureContent({ identity: state.context.identity, metadata: state.context.metadata })
-    await client.syncTranscript(state.context.identity, 'bilibili', [])
-    const current = await readState(tabId)
-    if (current?.context.kind !== 'vod'
-      || current.context.identity.bvid !== message.payload.bvid
-      || current.context.identity.cid !== message.payload.cid) return
-    const {
-      subtitleSegments: _segments,
-      subtitleIdentity: _identity,
-      subtitleSource: _source,
-      ...withoutSubtitle
-    } = current
-    const next = { ...withoutSubtitle, transcription: 'inactive' as const }
-    await writeState(tabId, next)
-    publishState(tabId, next)
+    await client.ensureContent({ identity: context.identity, metadata: context.metadata })
+    await client.syncTranscript(context.identity, 'bilibili', [])
+    await tabOperations.run(tabId, async () => {
+      const current = await readState(tabId)
+      if (current?.context.kind !== 'vod'
+        || current.context.identity.bvid !== message.payload.bvid
+        || current.context.identity.cid !== message.payload.cid) return
+      const {
+        subtitleSegments: _segments,
+        subtitleIdentity: _identity,
+        subtitleSource: _source,
+        ...withoutSubtitle
+      } = current
+      const next = { ...withoutSubtitle, transcription: 'inactive' as const }
+      await writeState(tabId, next)
+      publishState(tabId, next)
+    })
     return
   }
   // The background API import is authoritative. Page-world discovery is only
@@ -404,68 +417,66 @@ async function syncPageSubtitleTracks(tabId: number, message: PageSubtitleTracks
   if (state.subtitleIdentity?.bvid === message.payload.bvid
     && state.subtitleIdentity.cid === message.payload.cid
     && (state.subtitleSegments?.length ?? 0) > 0) return
-  const context = state.context
   for (const track of message.payload.tracks) {
     const segments = await fetchSubtitleTrackUrl(track)
     if (segments === null) continue
-    const settings = await loadSettings()
-    const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
     await client.ensureContent({ identity: context.identity, metadata: context.metadata })
     await client.syncTranscript(context.identity, 'bilibili', segments)
-    const current = await readState(tabId)
-    if (current?.context.kind !== 'vod'
-      || current.context.identity.bvid !== message.payload.bvid
-      || current.context.identity.cid !== message.payload.cid) return
-    // Another background/page request may have won while this URL was being
-    // downloaded. First valid commit wins; later responses are discarded.
-    if (current.subtitleIdentity?.bvid === message.payload.bvid
-      && current.subtitleIdentity.cid === message.payload.cid
-      && (current.subtitleSegments?.length ?? 0) > 0) return
-    await stopAsrSession()
-    const { transcriptPreview: _preview, ...withoutPreview } = current
-    const next = {
-      ...withoutPreview,
-      context,
-      transcription: 'inactive' as const,
-      subtitleSource: 'bilibili' as const,
-      subtitleSegments: segments.slice(-5000) as BilibiliSubtitleSegment[],
-      subtitleIdentity: { bvid: message.payload.bvid, cid: message.payload.cid },
-    }
-    await writeState(tabId, next)
-    publishState(tabId, next)
+    await tabOperations.run(tabId, async () => {
+      const current = await readState(tabId)
+      if (current?.context.kind !== 'vod'
+        || current.context.identity.bvid !== message.payload.bvid
+        || current.context.identity.cid !== message.payload.cid) return
+      // Another background/page request may have won while this URL was
+      // being downloaded. First valid commit wins; later responses are
+      // discarded.
+      if (current.subtitleIdentity?.bvid === message.payload.bvid
+        && current.subtitleIdentity.cid === message.payload.cid
+        && (current.subtitleSegments?.length ?? 0) > 0) return
+      await stopAsrSession()
+      const { transcriptPreview: _preview, ...withoutPreview } = current
+      const next = {
+        ...withoutPreview,
+        context,
+        transcription: 'inactive' as const,
+        subtitleSource: 'bilibili' as const,
+        subtitleSegments: segments.slice(-5000) as BilibiliSubtitleSegment[],
+        subtitleIdentity: { bvid: message.payload.bvid, cid: message.payload.cid },
+      }
+      await writeState(tabId, next)
+      publishState(tabId, next)
+    })
     return
   }
 }
 
-function applyContext(tabId: number, context: BilibiliContext | null): Promise<MomentQTabState | null> {
-  return tabOperations.run(tabId, () => applyContextUnlocked(tabId, context))
-}
-
-async function readOrResolveStateUnlocked(tabId: number): Promise<MomentQTabState | null> {
+async function readOrResolveState(tabId: number): Promise<MomentQTabState | null> {
+  const stored = await readState(tabId)
   const tab = await chrome.tabs.get(tabId).catch(() => null)
   const url = tab?.url
-  const stored = await readState(tabId)
   if (url !== undefined && stored !== null && sameContentLocation(url, stored.context.url)) return stored
   if (url === undefined || parseBilibiliLocation(url)?.kind !== 'vod') {
-    return stored === null ? null : applyContextUnlocked(tabId, null)
+    return stored === null ? null : applyContext(tabId, null)
   }
+  // Resolution hits the network; it stays outside the per-tab queue and
+  // lands through applyContext, which only queues the state write.
   const context = await resolveCurrentVodContext(url, {
     resolve: currentUrl => resolveSnapshotViaBilibiliApi({ url: currentUrl }),
     currentUrl: async () => (await chrome.tabs.get(tabId).catch(() => null))?.url,
   })
-  return context === null ? stored : applyContextUnlocked(tabId, context)
+  return context === null ? stored : applyContext(tabId, context)
 }
 
-async function refreshVodContextUnlocked(tabId: number, url: string): Promise<MomentQTabState | null> {
+async function refreshVodContext(tabId: number, url: string): Promise<MomentQTabState | null> {
   const stored = await readState(tabId)
   if (stored !== null && sameContentLocation(url, stored.context.url)) return stored
   const context = await resolveCurrentVodContext(url, {
     resolve: currentUrl => resolveSnapshotViaBilibiliApi({ url: currentUrl }),
     currentUrl: async () => (await chrome.tabs.get(tabId).catch(() => null))?.url,
   })
-  // A later navigation may overtake this queued refresh. Never publish a
-  // transient null (or clear the previous frame/subtitle UI) while resolving.
-  return context === null ? await readState(tabId) : applyContextUnlocked(tabId, context)
+  // A later navigation may overtake this refresh. Never publish a transient
+  // null (or clear the previous frame/subtitle UI) while resolving.
+  return context === null ? await readState(tabId) : applyContext(tabId, context)
 }
 
 async function toggleTranscriptionUnlocked(tabId: number): Promise<MomentQTabState | null> {
@@ -496,10 +507,8 @@ async function handleRequest(
   if (type === 'PAGE_SUBTITLE_TRACKS') {
     const tabId = sender.tab?.id
     if (tabId === undefined || !isPageSubtitleTracksMessageEnvelope(message)) return null
-    return tabOperations.run(tabId, async () => {
-      await syncPageSubtitleTracks(tabId, message)
-      return await readState(tabId)
-    })
+    await syncPageSubtitleTracks(tabId, message)
+    return await readState(tabId)
   }
 
   if (type === 'MOMENTQ_ASR_START_FROM_PANEL') {
@@ -582,7 +591,7 @@ async function handleRequest(
   const tabId = message.tabId
   if (!Number.isSafeInteger(tabId) || typeof tabId !== 'number' || tabId < 0) return null
   return type === 'MOMENTQ_GET_TAB_STATE'
-    ? tabOperations.run(tabId, () => readOrResolveStateUnlocked(tabId))
+    ? readOrResolveState(tabId)
     : toggleTranscription(tabId)
 }
 
@@ -605,7 +614,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     return
   }
   if (parseBilibiliLocation(changeInfo.url)?.kind === 'vod') {
-    void tabOperations.run(tabId, () => refreshVodContextUnlocked(tabId, changeInfo.url!))
+    void refreshVodContext(tabId, changeInfo.url!)
   }
 })
 
