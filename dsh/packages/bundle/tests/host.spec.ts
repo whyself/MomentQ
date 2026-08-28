@@ -197,4 +197,8 @@ describe.sequential('MomentQ Host service', () => {
     }
     await expect(ctx.plugin(MomentQService, { root: join(root, 'data') })).rejects.toThrow(/DSH_HOME/)
   })
+
+  it('does not introduce a profile dependency cycle through agentPresets', () => {
+    expect(MomentQService.inject).not.toContain('agentPresets')
+  })
 })

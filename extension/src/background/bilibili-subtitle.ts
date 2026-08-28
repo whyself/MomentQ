@@ -1,0 +1,52 @@
+import type { TranscriptSegment } from '../shared/host-client'
+import { normalizeSubtitleBody, parseSubtitleIndex } from '../shared/bilibili-subtitle'
+
+/** Fetch the best available Bilibili subtitle track for one VOD page. */
+export async function fetchBilibiliSubtitle(
+  bvid: string,
+  cid: string,
+  request: typeof fetch = globalThis.fetch.bind(globalThis),
+): Promise<TranscriptSegment[] | null> {
+  try {
+    // Current Bilibili players expose AI/native tracks through WBI first. The
+    // legacy endpoint remains a compatibility fallback for older pages.
+    const indexUrls = [
+      `https://api.bilibili.com/x/player/wbi/v2?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(cid)}`,
+      `https://api.bilibili.com/x/player/v2?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(cid)}`,
+    ]
+    for (const indexUrl of indexUrls) {
+      const indexResponse = await request(indexUrl, { credentials: 'include' })
+      if (!indexResponse.ok) continue
+      const index = parseSubtitleIndex(await indexResponse.json())
+      // Identity is mandatory. A stale/cached player response must never be
+      // relabelled as the requested video merely because its URL was current.
+      if (index === null || index.bvid !== bvid || index.cid !== cid) continue
+      for (const url of index.tracks) {
+        const response = await request(url, { credentials: 'include' })
+        if (!response.ok) continue
+        const segments = normalizeSubtitleBody(await response.json())
+        if (segments.length > 0) return segments
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+/** Read a subtitle JSON URL discovered in the page world. */
+export async function fetchSubtitleTrackUrl(
+  url: string,
+  request: typeof fetch = globalThis.fetch.bind(globalThis),
+): Promise<TranscriptSegment[] | null> {
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'https:' || !(parsed.hostname === 'subtitle.bilibili.com' || parsed.hostname.endsWith('.hdslb.com'))) return null
+    const response = await request(parsed.toString(), { credentials: 'include' })
+    if (!response.ok) return null
+    const segments = normalizeSubtitleBody(await response.json())
+    return segments.length > 0 ? segments : null
+  } catch {
+    return null
+  }
+}

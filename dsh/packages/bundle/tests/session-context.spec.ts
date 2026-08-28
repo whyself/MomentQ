@@ -58,10 +58,12 @@ describe('MomentQ Session context', () => {
   it('registers frozen instructions and safe metadata sections', async () => {
     const { directory, active } = await fixture()
     const assembly = await assemble(directory, active.id)
-    expect(assembly.sections.find(section => section.name === 'momentq:session-instructions')).toEqual({
+    expect(assembly.sections.find(section => section.name === 'momentq:session-instructions')).toMatchObject({
       name: 'momentq:session-instructions',
-      text: '<session-instructions>\nSession instruction\n</session-instructions>',
+      text: expect.stringContaining('Session instruction'),
     })
+    expect(assembly.sections.find(section => section.name === 'momentq:session-instructions')?.text)
+      .toContain('禁止使用其他视频、旧字幕或编造内容')
     const metadataSection = assembly.sections.find(section => section.name === 'momentq:content-metadata')!
     expect(metadataSection).toMatchObject({ name: 'momentq:content-metadata' })
     expect(metadataSection.text).toContain('"title": "Title with newline"')

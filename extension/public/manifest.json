@@ -1,0 +1,64 @@
+{
+  "manifest_version": 3,
+  "name": "MomentQ（刻问）",
+  "description": "使用当前 B 站视频或直播上下文向 MomentQ 提问。",
+  "version": "0.1.8",
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://www.bilibili.com/*",
+    "https://live.bilibili.com/*",
+    "https://api.bilibili.com/*",
+    "https://subtitle.bilibili.com/*",
+    "https://*.biliapi.com/*",
+    "https://*.hdslb.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "assets/background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "打开 MomentQ"
+  },
+  "commands": {
+    "open-side-panel": {
+      "suggested_key": {
+        "default": "Alt+Q"
+      },
+      "description": "打开 MomentQ 侧边栏"
+    },
+    "capture-current-frame": {
+      "suggested_key": {
+        "default": "Alt+Shift+C"
+      },
+      "description": "截取当前视频画面"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.bilibili.com/*",
+        "https://live.bilibili.com/*"
+      ],
+      "js": ["assets/page-bridge.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://www.bilibili.com/*",
+        "https://live.bilibili.com/*"
+      ],
+      "js": ["assets/content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

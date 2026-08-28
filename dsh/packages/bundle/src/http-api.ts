@@ -2,12 +2,13 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
+import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { z } from 'zod'
 import { contentIdentitySchema, contentMetadataSchema, MomentQStateNotFoundError } from './state.ts'
 
 export const name = 'momentq-http-api'
-export const inject = ['momentq', 'webServer']
+export const inject = ['momentq', 'webServer', 'credentials']
 
 const MAX_BODY_BYTES = 1024 * 1024
 
@@ -22,22 +23,71 @@ const replaceParams = z.object({
   identity: contentIdentitySchema,
   sessionInstructions: z.string().max(4000).optional(),
 }).strict()
+const submitMessageParams = z.object({
+  identity: contentIdentitySchema,
+  text: z.string().trim().min(1).max(32_000),
+}).strict()
+const syncTranscriptParams = z.object({
+  identity: contentIdentitySchema,
+  source: z.enum(['bilibili', 'asr']),
+  segments: z.array(z.object({
+    start: z.number().finite().nonnegative(),
+    end: z.number().finite().nonnegative(),
+    text: z.string().trim().min(1).max(20_000),
+  }).strict().refine(segment => segment.end >= segment.start)).max(100_000),
+}).strict()
+const streamMessageParams = submitMessageParams
+const setModelApiKeyParams = z.object({
+  apiKey: z.string()
+    .min(1)
+    .max(8192)
+    .regex(/^[\x21-\x7e]+$/)
+    .refine(value => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(value))
+    .refine(value => !((value.startsWith('"') && value.endsWith('"'))
+      || (value.startsWith("'") && value.endsWith("'")))),
+}).strict()
+
+const MODEL_API_KEY_REF = credentialRef('DEEPSEEK_API_KEY')
 
 const requestSchema = z.object({
   method: z.enum([
-    'ensureContent', 'getContent', 'archiveSession', 'resetSession', 'deleteSession', 'deleteContent',
+    'ensureContent', 'getContent', 'getHistory', 'submitMessage', 'syncTranscript', 'archiveSession', 'resetSession', 'deleteSession', 'deleteContent',
+    'setModelApiKey',
   ]),
   params: z.unknown(),
 }).strict()
 
 type ApiErrorCode = 'invalid-request' | 'content-not-found' | 'session-conflict' | 'internal'
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
+function allowedOrigin(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined
+  try {
+    const origin = new URL(value)
+    const extension = origin.protocol === 'chrome-extension:' || origin.protocol === 'moz-extension:'
+    const loopbackPreview = origin.protocol === 'http:'
+      && (origin.hostname === '127.0.0.1' || origin.hostname === 'localhost')
+    return extension || loopbackPreview ? value : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function corsHeaders(origin: string | undefined): Record<string, string> {
+  return origin === undefined
+    ? {}
+    : {
+        'access-control-allow-origin': origin,
+        vary: 'Origin',
+      }
+}
+
+function sendJson(res: ServerResponse, status: number, body: unknown, origin?: string): void {
   const content = JSON.stringify(body)
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'content-length': Buffer.byteLength(content),
     'cache-control': 'no-store',
+    ...corsHeaders(origin),
   })
   res.end(content)
 }
@@ -87,27 +137,30 @@ export function apply(ctx: Context): void {
     kind: 'exact',
     path: '/momentq/api',
     async handler(req, res) {
+      const requestOrigin = req.headers.origin
+      const responseOrigin = allowedOrigin(requestOrigin)
+      if (requestOrigin !== undefined && responseOrigin === undefined) {
+        sendJson(res, 403, { ok: false, error: { code: 'invalid-request', message: 'Origin not allowed' } })
+        return
+      }
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, {
+          ...corsHeaders(responseOrigin),
+          'access-control-allow-methods': 'POST, OPTIONS',
+          'access-control-allow-headers': 'content-type',
+          'access-control-max-age': '600',
+        })
+        res.end()
+        return
+      }
       if (req.method !== 'POST') {
-        sendJson(res, 405, { ok: false, error: { code: 'invalid-request', message: 'POST required' } })
+        sendJson(res, 405, { ok: false, error: { code: 'invalid-request', message: 'POST required' } }, responseOrigin)
         return
       }
       const mediaType = req.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
       if (mediaType !== 'application/json') {
-        sendJson(res, 415, { ok: false, error: { code: 'invalid-request', message: 'JSON required' } })
+        sendJson(res, 415, { ok: false, error: { code: 'invalid-request', message: 'JSON required' } }, responseOrigin)
         return
-      }
-      const origin = req.headers.origin
-      if (origin !== undefined) {
-        let protocol: string
-        try {
-          protocol = new URL(origin).protocol
-        } catch {
-          protocol = ''
-        }
-        if (protocol !== 'chrome-extension:' && protocol !== 'moz-extension:') {
-          sendJson(res, 403, { ok: false, error: { code: 'invalid-request', message: 'Origin not allowed' } })
-          return
-        }
       }
       try {
         const request = requestSchema.parse(await bodyOf(req))
@@ -121,6 +174,21 @@ export function apply(ctx: Context): void {
           case 'getContent': {
             const { identity } = identityParams.parse(request.params)
             value = await ctx.momentq.getContent(identity)
+            break
+          }
+          case 'getHistory': {
+            const { identity } = identityParams.parse(request.params)
+            value = await ctx.momentq.getHistory(identity)
+            break
+          }
+          case 'submitMessage': {
+            const params = submitMessageParams.parse(request.params)
+            value = await ctx.momentq.submitMessage(params.identity, params.text)
+            break
+          }
+          case 'syncTranscript': {
+            const params = syncTranscriptParams.parse(request.params)
+            value = await ctx.momentq.syncTranscript(params.identity, params.source, params.segments)
             break
           }
           case 'archiveSession': {
@@ -143,15 +211,83 @@ export function apply(ctx: Context): void {
             value = await ctx.momentq.deleteContent(identity)
             break
           }
+          case 'setModelApiKey': {
+            const { apiKey } = setModelApiKeyParams.parse(request.params)
+            await ctx.credentials.set(MODEL_API_KEY_REF, apiKey)
+            value = { saved: true }
+            break
+          }
         }
-        sendJson(res, 200, { ok: true, value })
+        sendJson(res, 200, { ok: true, value }, responseOrigin)
       } catch (error) {
         const failure = apiFailure(error)
         if (failure.status === 500) ctx.logger.warn(error instanceof Error ? error : new Error(String(error)))
         sendJson(res, failure.status, {
           ok: false,
           error: { code: failure.code, message: failure.message },
+        }, responseOrigin)
+      }
+    },
+  }))
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/momentq/api/stream',
+    async handler(req, res) {
+      const requestOrigin = req.headers.origin
+      const responseOrigin = allowedOrigin(requestOrigin)
+      if (requestOrigin !== undefined && responseOrigin === undefined) {
+        sendJson(res, 403, { ok: false, error: { code: 'invalid-request', message: 'Origin not allowed' } })
+        return
+      }
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, {
+          ...corsHeaders(responseOrigin),
+          'access-control-allow-methods': 'POST, OPTIONS',
+          'access-control-allow-headers': 'content-type',
+          'access-control-max-age': '600',
         })
+        res.end()
+        return
+      }
+      if (req.method !== 'POST') {
+        sendJson(res, 405, { ok: false, error: { code: 'invalid-request', message: 'POST required' } }, responseOrigin)
+        return
+      }
+      const mediaType = req.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
+      if (mediaType !== 'application/json') {
+        sendJson(res, 415, { ok: false, error: { code: 'invalid-request', message: 'JSON required' } }, responseOrigin)
+        return
+      }
+      const abort = new AbortController()
+      res.on('close', () => { if (!res.writableEnded) abort.abort() })
+      try {
+        const params = streamMessageParams.parse(await bodyOf(req))
+        res.writeHead(200, {
+          'content-type': 'application/x-ndjson; charset=utf-8',
+          'cache-control': 'no-store',
+          'x-content-type-options': 'nosniff',
+          ...corsHeaders(responseOrigin),
+        })
+        await ctx.momentq.streamMessage(params.identity, params.text, (event) => {
+          if (!res.destroyed) res.write(`${JSON.stringify(event)}\n`)
+        }, abort.signal)
+        res.end()
+      } catch (error) {
+        const failure = apiFailure(error)
+        if (failure.status === 500) ctx.logger.warn(error instanceof Error ? error : new Error(String(error)))
+        if (res.headersSent) {
+          if (!res.destroyed) {
+            res.end(`${JSON.stringify({
+              type: 'error', code: failure.code, message: failure.message,
+            })}\n`)
+          }
+        } else {
+          sendJson(res, failure.status, {
+            ok: false,
+            error: { code: failure.code, message: failure.message },
+          }, responseOrigin)
+        }
       }
     },
   }))

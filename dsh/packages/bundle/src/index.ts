@@ -5,7 +5,8 @@ import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
-import { SessionId, type SessionHeader, type SessionId as DshSessionId } from '@deepseek-ai/dsh-session'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { SessionId, type SessionEvent, type SessionHeader, type SessionId as DshSessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-agent-presets'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {} from '@deepseek-ai/dsh-workspace'
@@ -23,12 +24,15 @@ import {
   readState,
   resolveSessionInstructions,
   writeState,
+  replaceTranscript,
+  type TranscriptSegment,
   type MomentQSessionRecord,
   type MomentQState,
 } from './state.ts'
 
 export type { ContentIdentity, ContentMetadata } from './content.ts'
 export type { MomentQState } from './state.ts'
+export type { TranscriptSegment } from './state.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -59,6 +63,61 @@ export interface SessionMutationResult {
   cwd: string
 }
 
+/** One visible assistant message returned after a submitted user turn. */
+export interface ConversationReply {
+  id: string
+  text: string
+}
+
+/** Text messages already committed in the active DSH Session. */
+export interface ConversationHistoryEntry {
+  id: string
+  role: 'user' | 'assistant'
+  text: string
+  blocks: readonly string[]
+}
+
+/** Result of submitting one user message to the active content Session. */
+export interface SubmitMessageResult {
+  contentKey: string
+  sessionId: DshSessionId
+  userMessageId: string
+  replies: ConversationReply[]
+}
+
+export interface SyncTranscriptResult {
+  contentKey: string
+  source: 'bilibili' | 'asr'
+  segments: number
+  updatedAt?: string
+}
+
+/** Incremental events exposed by the loopback browser transport. */
+export type MessageStreamEvent =
+  | {
+      type: 'started'
+      contentKey: string
+      sessionId: DshSessionId
+      userMessageId: string
+    }
+  | {
+      type: 'assistant-delta'
+      turn: number
+      step: number
+      index: number
+      text: string
+    }
+  | {
+      type: 'assistant-message'
+      turn: number
+      step: number
+      id: string
+      text: string
+      blocks: readonly string[]
+      interrupted: boolean
+    }
+  | { type: 'complete'; result: SubmitMessageResult }
+
 /** Host plugin configuration. */
 export interface Config {
   root: string
@@ -66,7 +125,7 @@ export interface Config {
   maxInstructionsLength?: number | undefined
 }
 
-const DEFAULT_INSTRUCTIONS = '直接、自然地完成用户的请求。需要视频上下文时使用提供的字幕、画面和工具。'
+const DEFAULT_INSTRUCTIONS = '直接、自然地完成用户的请求。需要视频上下文时只使用已提供的字幕、画面和工具证据；证据不足或没有字幕时明确说明无法判断，不得编造视频内容。'
 const PRESET_ID = 'momentq'
 const PROVIDER = 'deepseek-official'
 const MODEL = 'deepseek-v4-flash-vision-exp'
@@ -108,7 +167,10 @@ function sameSessionRecord(record: MomentQSessionRecord, header: SessionHeader, 
 
 /** Content and Session router registered as `ctx.momentq`. */
 export class MomentQService extends Service {
-  static inject = ['agents', 'sessions', 'sessionPersistence', 'workspaceRegistry', 'agentPresets']
+  // agentPresets is mounted only when an Agent is created. Keeping it out of
+  // service-init dependencies breaks the profile cycle where the MomentQ-only
+  // preset roster obtains this service's package-owned presetRoot.
+  static inject = ['agents', 'sessions', 'sessionPersistence', 'workspaceRegistry']
 
   static Config = z.object({
     root: z.string().required(),
@@ -217,6 +279,148 @@ export class MomentQService extends Service {
       const state = await readState(contentDirectory(this.root, identity))
       this.assertIdentity(identity, state)
       return state
+    })
+  }
+
+  /** Read the committed user/assistant message history for one Session. */
+  async getHistory(identity: ContentIdentity): Promise<ConversationHistoryEntry[]> {
+    return await this.forContent(identity, async () => {
+      const cwd = contentDirectory(this.root, identity)
+      const state = await readState(cwd)
+      this.assertIdentity(identity, state)
+      const active = this.requireActive(state)
+      const agent = await this.ensureAgent(active, cwd)
+      return agent.session.events.flatMap((event): ConversationHistoryEntry[] => {
+        if (event.type === 'user/message') {
+          const blocks = event.data.content.filter(block => block.type === 'text').map(block => block.text)
+          const text = blocks.join('\n').trim()
+          return text === '' ? [] : [{ id: String(event.data.id), role: 'user', text, blocks }]
+        }
+        if (event.type === 'assistant/message') {
+          const blocks = event.data.message.content.filter(block => block.type === 'text').map(block => block.text)
+          const text = blocks.join('\n').trim()
+          return text === '' ? [] : [{ id: String(event.data.message.id), role: 'assistant', text, blocks }]
+        }
+        return []
+      })
+    })
+  }
+
+  /** Atomically replace the transcript consumed by the current Agent. */
+  async syncTranscript(
+    identity: ContentIdentity,
+    source: 'bilibili' | 'asr',
+    segments: readonly TranscriptSegment[],
+  ): Promise<SyncTranscriptResult> {
+    return await this.forContent(identity, async () => {
+      const cwd = contentDirectory(this.root, identity)
+      const state = await readState(cwd)
+      this.assertIdentity(identity, state)
+      const next = await replaceTranscript(cwd, source, segments)
+      return {
+        contentKey: contentKey(identity),
+        source,
+        segments: segments.length,
+        ...(next.transcript.updatedAt === undefined ? {} : { updatedAt: next.transcript.updatedAt }),
+      }
+    })
+  }
+
+  /** Submit one real user turn and return the assistant text committed by DSH. */
+  async submitMessage(identity: ContentIdentity, text: string): Promise<SubmitMessageResult> {
+    let result: SubmitMessageResult | undefined
+    await this.streamMessage(identity, text, (event) => {
+      if (event.type === 'complete') result = event.result
+    })
+    if (result === undefined) throw new Error('MomentQ Agent did not complete the submitted message')
+    return result
+  }
+
+  /** Submit one user turn while forwarding DSH's native committed chunk lifecycle. */
+  async streamMessage(
+    identity: ContentIdentity,
+    text: string,
+    publish: (event: MessageStreamEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<SubmitMessageResult> {
+    const prompt = text.trim()
+    if (prompt === '' || prompt.length > 32_000) throw new Error('message must contain 1 to 32000 characters')
+    return await this.forContent(identity, async () => {
+      if (signal?.aborted === true) throw new Error('MomentQ request aborted')
+      const cwd = contentDirectory(this.root, identity)
+      const state = await readState(cwd)
+      this.assertIdentity(identity, state)
+      const active = this.requireActive(state)
+      const agent = await this.ensureAgent(active, cwd)
+      const eventOffset = agent.session.events.length
+      const message = createUserMessage({
+        content: [{ type: 'text', text: prompt }],
+        source: { kind: 'user' },
+      })
+      const forward = (session: Agent['session'], event: SessionEvent): void => {
+        if (session !== agent.session || event.seq < eventOffset) return
+        if (event.type === 'assistant/chunk' && event.data.chunk.type === 'text-delta') {
+          publish({
+            type: 'assistant-delta',
+            turn: event.data.turn,
+            step: event.data.step,
+            index: event.data.chunk.index,
+            text: event.data.chunk.text,
+          })
+          return
+        }
+        if (event.type !== 'assistant/message') return
+        const blocks = event.data.message.content
+          .filter(block => block.type === 'text')
+          .map(block => block.text)
+        const replyText = blocks.join('\n')
+        if (replyText.trim() === '') return
+        publish({
+          type: 'assistant-message',
+          turn: event.data.turn,
+          step: event.data.step,
+          id: String(event.data.message.id),
+          text: replyText,
+          blocks,
+          interrupted: event.data.interrupted === true,
+        })
+      }
+      const disposeListener = this.ctx.on('session/event', forward)
+      const cancel = (): void => { if (agent.status !== 'idle') agent.cancel({ kind: 'user' }) }
+      signal?.addEventListener('abort', cancel, { once: true })
+      publish({
+        type: 'started',
+        contentKey: contentKey(identity),
+        sessionId: SessionId(active.id),
+        userMessageId: String(message.id),
+      })
+      try {
+        agent.followup(message)
+        await agent.whenIdle()
+        await this.ctx.sessions.flush(agent.session)
+      } finally {
+        signal?.removeEventListener('abort', cancel)
+        disposeListener()
+      }
+
+      const replies: ConversationReply[] = []
+      for (const event of agent.session.events.slice(eventOffset)) {
+        if (event.type !== 'assistant/message') continue
+        const text = event.data.message.content
+          .filter(block => block.type === 'text')
+          .map(block => block.text)
+          .join('\n')
+        if (text.trim() !== '') replies.push({ id: String(event.data.message.id), text })
+      }
+      if (replies.length === 0) throw new Error('MomentQ Agent returned no text response')
+      const result = {
+        contentKey: contentKey(identity),
+        sessionId: SessionId(active.id),
+        userMessageId: String(message.id),
+        replies,
+      }
+      publish({ type: 'complete', result })
+      return result
     })
   }
 
@@ -383,7 +587,9 @@ export class MomentQService extends Service {
 
     const stored = (await this.ctx.sessionPersistence.list()).find(header => header.id === id)
     const setup = async (agentCtx: Context): Promise<void> => {
-      void await this.ctx.agentPresets.mount(agentCtx, PRESET_ID)
+      const agentPresets = this.ctx.get('agentPresets')
+      if (agentPresets === undefined) throw new Error('MomentQ requires the agent presets service')
+      void await agentPresets.mount(agentCtx, PRESET_ID)
     }
     let handle: AgentHandle
     if (stored !== undefined) {

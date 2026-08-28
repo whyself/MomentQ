@@ -148,6 +148,24 @@ describe.sequential('assembled MomentQ Bundle runtime', () => {
     expect(firstRequest.system).toContain('"creator": "讲师"')
     expect(firstRequest.tools?.map(tool => tool.name).sort()).toEqual(['grep', 'read'])
 
+    const submitted = await firstRuntime.ctx.momentq.submitMessage(request.identity, '解释一下特征值')
+    expect(submitted).toMatchObject({
+      contentKey: first.contentKey,
+      sessionId: first.sessionId,
+      replies: [{ text: 'ok' }],
+    })
+
+    const streamedEvents: string[] = []
+    const streamed = await firstRuntime.ctx.momentq.streamMessage(
+      request.identity,
+      '流式解释一下特征值',
+      event => { streamedEvents.push(event.type) },
+    )
+    expect(streamed.replies).toEqual([{ id: expect.any(String), text: 'ok' }])
+    expect(streamedEvents).toEqual([
+      'started', 'assistant-delta', 'assistant-message', 'complete',
+    ])
+
     const firstAgent = firstRuntime.ctx.agents.get(first.sessionId)
     if (firstAgent === undefined) throw new Error('first Agent disappeared before persistence inspection')
     const artifact = firstRuntime.ctx.sessionPersistence.locate(firstAgent.session.header)

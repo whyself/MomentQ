@@ -98,6 +98,43 @@ export type MomentQState = z.infer<typeof momentQStateSchema>
 export type MomentQSessionRecord = z.infer<typeof sessionRecordSchema>
 export type MomentQRetiredSession = z.infer<typeof retiredSessionSchema>
 
+export interface TranscriptSegment {
+  start: number
+  end: number
+  text: string
+}
+
+/** Replace the content transcript with normalized Bilibili/ASR segments. */
+export async function replaceTranscript(
+  directory: string,
+  source: 'bilibili' | 'asr',
+  segments: readonly TranscriptSegment[],
+): Promise<MomentQState> {
+  return await serialized(directory, async () => {
+    const current = await readStateOrUndefined(directory)
+    if (current === undefined) throw new MomentQStateNotFoundError(`MomentQ state is missing in "${resolve(directory)}"`)
+    const normalized = segments
+      .filter(segment => Number.isFinite(segment.start) && Number.isFinite(segment.end)
+        && segment.start >= 0 && segment.end >= segment.start
+        && typeof segment.text === 'string' && segment.text.trim() !== '')
+      .map(segment => ({ start: segment.start, end: segment.end, text: segment.text.trim() }))
+    const lines = normalized.map(segment => JSON.stringify(segment)).join('\n')
+    await writeFileAtomic(join(resolve(directory), 'transcript.jsonl'), lines === '' ? '' : `${lines}\n`)
+    const coveredRanges = normalized.length === 0 ? [] : [{
+      start: Math.min(...normalized.map(segment => segment.start)),
+      end: Math.max(...normalized.map(segment => segment.end)),
+    }]
+    return await publishState(resolve(directory), {
+      ...current,
+      transcript: {
+        source,
+        coveredRanges,
+        ...(normalized.length === 0 ? {} : { updatedAt: new Date().toISOString() }),
+      },
+    })
+  })
+}
+
 /** Missing state is distinct from corrupt state for API error mapping. */
 export class MomentQStateNotFoundError extends Error {}
 

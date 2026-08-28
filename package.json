@@ -7,9 +7,9 @@
     "node": "^22.19.0 || >=24.0.0"
   },
   "scripts": {
-    "build": "pnpm --filter momentq-dsh-bundle build",
-    "test": "pnpm --filter momentq-dsh-bundle test",
-    "typecheck": "pnpm --filter momentq-dsh-bundle typecheck"
+    "build": "pnpm --filter momentq-dsh-bundle build && pnpm --filter momentq-browser-extension build",
+    "test": "pnpm --filter momentq-dsh-bundle test && pnpm --filter momentq-browser-extension test",
+    "typecheck": "pnpm --filter momentq-dsh-bundle typecheck && pnpm --filter momentq-browser-extension typecheck"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

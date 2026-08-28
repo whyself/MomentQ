@@ -2,9 +2,13 @@ node_modules/
 dist/
 coverage/
 .release/
+data/
+*.tsbuildinfo
 .env
 .env.*
 !.env.example
-data/
-*.tsbuildinfo
+
+# Local build artifacts and reference material; kept out of version control.
+extension/releases/
+extension/prototype/
 

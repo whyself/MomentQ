@@ -10,7 +10,7 @@
 ## 2. MVP 范围
 
 - 平台：Windows，Chrome/Edge，B 站视频与直播。
-- 交互形态暂不确定；仅要求浏览器侧能够捕获当前内容、时间点并提交问题，具体设计留到交互阶段讨论。
+- 交互形态为独立的 Chrome/Edge 侧边栏前端；工具栏按钮或 `Alt+Q` 唤出，页面侧播放/暂停悬浮控件只表达并切换转录状态。
 - 视觉输入：每次提问至多上传当前帧一张；与画面无关时可不上传。
 - 不保存视频或音频，不做视频下载、片段缓存、多帧分析及向量数据库。
 - 每个视频分 P、每场直播分别绑定一个持久 DSH Session。
@@ -28,7 +28,7 @@
 
 字幕优先级固定如下：
 
-1. 进入页面后先探测并实际提取 B 站字幕。
+1. 进入页面后优先通过页面登录态的 `x/player/wbi/v2` 一次性加载完整字幕轨道；仅在接口没有公开轨道时采样播放器字幕 DOM。
 2. 成功取得非空字幕正文时，导入字幕并禁止启动实时 ASR。
 3. 无字幕或提取失败时，仅展示“可开启实时字幕”；用户主动开启后才连接 ASR。
 4. 第一家实时 ASR Provider 暂定百度实时语音识别。
@@ -87,11 +87,26 @@ Agent 使用固定的 `momentq` Preset，新 Session 默认模型为 `deepseek-o
 
 ## 8. 组件边界
 
-- 浏览器扩展：作为 B 站连接层，识别页面、获取当前时间与播放器状态、捕获当前帧和标签页音频；具体交互形态暂不确定。
+- 浏览器扩展：作为独立 B 站侧边栏前端，识别页面、获取当前时间与播放器状态、捕获当前帧和标签页音频；不作为 DSH 插件注册。
 - 本地伴随服务：百度鉴权与 WebSocket、ASR Run 管理、字幕持久化、Session 路由及 DSH 接入。
 - DSH Agent：根据已提供字幕直接回答；证据不足时用 `grep`/`read` 补查字幕。
 
 MomentQ Host 在 DSH loopback WebServer 上注册 `/momentq/api`，并随 Bundle 提供浏览器安全 SDK。第一版接口覆盖内容创建／恢复、状态读取、Session 归档／重置／删除和完整内容删除；接口只接受内容身份，不接受 cwd、Session ID、Preset ID 或任意路径。
 
 本地 MVP 不强制使用 Docker；Provider 保持抽象，后续可增加腾讯、火山、Deepgram 或本地 ASR，而不修改字幕与 Agent 层。DSH 运行层独立放在 `dsh/`，由原生 runtime 或 Docker 发行版携带固定的 DSH 框架与 MomentQ Bundle；浏览器扩展、本地伴随服务和共享协议分别放在顶级 `extension/`、`companion/`、`shared/` 目录。
+
+## 9. 浏览器侧边栏 UI 原型
+
+正式扩展实现前，先维护一个从 DSH WebUI 实际响应组装的原型；不手工重画视觉样式：
+
+```text
+extension/prototype/
+├─ src/            # 从 DSH apps/web 与 client/ui-* 迁入的最小前端入口
+├─ index.html      # 沿用 DSH WebUI 的 HTML 入口
+└─ README.md       # 上游来源、变更边界和运行方式
+```
+
+当前 `extension/prototype/index.html` 保留 DSH WebUI 服务端注入 ModuleLoader 后的原始 HTML 以及原始 hashed assets，不再保留手写静态 mock。MomentQ 浏览器前端是 `extension/` 下的独立应用，不注册为 DSH 插件，也不修改 DSH 的 `ui-layout`、`ui-sidebar` 或 `ui-conversation` 插件包。它从 DSH 上游源码迁入所需的原始组件、CSS modules、tokens 与图标作为固定基线，再在独立入口中做侧边栏组合：不挂载 Workspace/Session 浏览区、分 P 文案按内容元数据条件挂载、侧边悬浮球复用 DSH 播放/暂停控件表达实时转录状态。
+
+独立前端通过 MomentQ browser-safe SDK 调用本地 Host，不直接依赖 DSH 插件装载器。Manifest V3 多入口、B 站上下文桥接、按标签页状态、侧栏唤出、锁定 DSH 源码的可见侧栏 UI、设置面板与页面转录悬浮控件均已实现。对话正文直接复用锁定上游的 `MarkdownText`、CSS Modules 与增量解析器；Host 将原生 `assistant/chunk` / `assistant/message` 生命周期转换为回环 NDJSON 流，切换内容时取消旧流。ASR 鉴权、音频流和实时识别仍由后续 `companion/` 负责，不把密钥放入扩展。
 

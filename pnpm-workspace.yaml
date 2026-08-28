@@ -5,4 +5,5 @@ packages:
   - companion
 
 allowBuilds:
+  esbuild: true
   koffi: true

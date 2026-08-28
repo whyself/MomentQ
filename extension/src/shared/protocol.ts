@@ -1,0 +1,271 @@
+export type BilibiliPageSnapshot = {
+  url: string
+  canonicalUrl?: string
+  title?: string
+  creator?: {
+    id?: string | number
+    name?: string
+  }
+  vod?: {
+    bvid?: string
+    aid?: string | number
+    cid?: string | number
+    pageNumber?: number
+    pageCount?: number
+    partTitle?: string
+  }
+  live?: {
+    roomId?: string | number
+    canonicalRoomId?: string | number
+    liveStartTime?: string
+  }
+}
+
+export type BilibiliContext =
+  | {
+      kind: 'vod'
+      identity: {
+        kind: 'vod'
+        bvid: string
+        cid: string
+      }
+      metadata: {
+        title: string
+        creator: { id?: string; name: string }
+        part?: { number: number; title?: string }
+      }
+      url: string
+    }
+  | {
+      kind: 'live'
+      identity: {
+        kind: 'live'
+        canonicalRoomId: string
+        liveStartTime: string
+      }
+      metadata: {
+        title: string
+        creator: { id?: string; name: string }
+      }
+      url: string
+    }
+
+export type PageMessageEnvelope = {
+  source: 'momentq-page'
+  version: 1
+  type: 'PAGE_SNAPSHOT'
+  payload: BilibiliPageSnapshot
+}
+
+export type BilibiliSubtitleSegment = {
+  start: number
+  end: number
+  text: string
+}
+
+export type PageSubtitleMessageEnvelope = {
+  source: 'momentq-page'
+  version: 1
+  type: 'PAGE_SUBTITLE'
+  payload: {
+    bvid: string
+    cid: string
+    segments: BilibiliSubtitleSegment[]
+  }
+}
+
+export type PageSubtitleTracksMessageEnvelope = {
+  source: 'momentq-page'
+  version: 1
+  type: 'PAGE_SUBTITLE_TRACKS'
+  payload: {
+    bvid: string
+    cid: string
+    /** A validated index response either exposes tracks or proves absence. */
+    status: 'available' | 'absent'
+    tracks: string[]
+  }
+}
+
+export type PageSubtitlePositionMessageEnvelope = {
+  source: 'momentq-page'
+  version: 1
+  type: 'PAGE_SUBTITLE_POSITION'
+  payload: { bvid: string; cid: string; currentTime: number }
+}
+
+export type PageContextRuntimeMessage = {
+  type: 'MOMENTQ_PAGE_CONTEXT'
+  context: BilibiliContext | null
+}
+
+export type ResolvePageSnapshotMessage = {
+  type: 'MOMENTQ_RESOLVE_PAGE_SNAPSHOT'
+  snapshot: BilibiliPageSnapshot
+}
+
+export type TranscriptionState = 'inactive' | 'active' | 'paused'
+
+export type MomentQTabState = {
+  tabId: number
+  context: BilibiliContext
+  transcription: TranscriptionState
+  /** Complete native/AI subtitle track, when available for this VOD. */
+  subtitleSegments?: BilibiliSubtitleSegment[]
+  /** Identity of subtitleSegments; the UI must never render across a mismatch. */
+  subtitleIdentity?: { bvid: string; cid: string }
+  subtitleCurrentTime?: number
+}
+
+export type GetTabStateMessage = {
+  type: 'MOMENTQ_GET_TAB_STATE'
+  tabId: number
+}
+
+export type ToggleTranscriptionMessage = {
+  type: 'MOMENTQ_TOGGLE_TRANSCRIPTION'
+  tabId: number
+}
+
+export type ToggleCurrentTranscriptionMessage = {
+  type: 'MOMENTQ_TOGGLE_CURRENT_TRANSCRIPTION'
+}
+
+export type CaptureCurrentFrameMessage = {
+  type: 'MOMENTQ_CAPTURE_CURRENT_FRAME'
+}
+
+export type GetCurrentVideoTimeMessage = {
+  type: 'MOMENTQ_GET_CURRENT_VIDEO_TIME'
+}
+
+export type TabStateChangedMessage = {
+  type: 'MOMENTQ_TAB_STATE_CHANGED'
+  tabId: number
+  state: MomentQTabState | null
+  /** Monotonic per-tab publication id used to reject late messages. */
+  revision?: number
+}
+
+type PlainRecord = Record<string, unknown>
+
+function isPlainRecord(value: unknown): value is PlainRecord {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const prototype = Object.getPrototypeOf(value) as unknown
+  return prototype === Object.prototype || prototype === null
+}
+
+function hasOnlyKeys(value: PlainRecord, allowed: readonly string[]): boolean {
+  return Object.keys(value).every(key => allowed.includes(key))
+}
+
+function isOptionalString(value: PlainRecord, key: string): boolean {
+  return !Object.hasOwn(value, key) || typeof value[key] === 'string'
+}
+
+function isOptionalId(value: PlainRecord, key: string): boolean {
+  return !Object.hasOwn(value, key)
+    || typeof value[key] === 'string'
+    || (typeof value[key] === 'number' && Number.isFinite(value[key]))
+}
+
+function isOptionalFiniteNumber(value: PlainRecord, key: string): boolean {
+  return !Object.hasOwn(value, key)
+    || (typeof value[key] === 'number' && Number.isFinite(value[key]))
+}
+
+function isCreator(value: unknown): boolean {
+  return isPlainRecord(value)
+    && hasOnlyKeys(value, ['id', 'name'])
+    && isOptionalId(value, 'id')
+    && isOptionalString(value, 'name')
+}
+
+function isVodSnapshot(value: unknown): boolean {
+  return isPlainRecord(value)
+    && hasOnlyKeys(value, ['bvid', 'aid', 'cid', 'pageNumber', 'pageCount', 'partTitle'])
+    && isOptionalString(value, 'bvid')
+    && isOptionalId(value, 'aid')
+    && isOptionalId(value, 'cid')
+    && isOptionalFiniteNumber(value, 'pageNumber')
+    && isOptionalFiniteNumber(value, 'pageCount')
+    && isOptionalString(value, 'partTitle')
+}
+
+function isLiveSnapshot(value: unknown): boolean {
+  return isPlainRecord(value)
+    && hasOnlyKeys(value, ['roomId', 'canonicalRoomId', 'liveStartTime'])
+    && isOptionalId(value, 'roomId')
+    && isOptionalId(value, 'canonicalRoomId')
+    && isOptionalString(value, 'liveStartTime')
+}
+
+export function isBilibiliPageSnapshot(value: unknown): value is BilibiliPageSnapshot {
+  if (!isPlainRecord(value)
+    || !hasOnlyKeys(value, ['url', 'canonicalUrl', 'title', 'creator', 'vod', 'live'])
+    || typeof value.url !== 'string'
+    || !isOptionalString(value, 'canonicalUrl')
+    || !isOptionalString(value, 'title')) return false
+  if (Object.hasOwn(value, 'creator') && !isCreator(value.creator)) return false
+  if (Object.hasOwn(value, 'vod') && !isVodSnapshot(value.vod)) return false
+  if (Object.hasOwn(value, 'live') && !isLiveSnapshot(value.live)) return false
+  return !(Object.hasOwn(value, 'vod') && Object.hasOwn(value, 'live'))
+}
+
+export function isPageMessageEnvelope(value: unknown): value is PageMessageEnvelope {
+  return isPlainRecord(value)
+    && hasOnlyKeys(value, ['source', 'version', 'type', 'payload'])
+    && Object.hasOwn(value, 'source') && value.source === 'momentq-page'
+    && Object.hasOwn(value, 'version') && value.version === 1
+    && Object.hasOwn(value, 'type') && value.type === 'PAGE_SNAPSHOT'
+    && Object.hasOwn(value, 'payload') && isBilibiliPageSnapshot(value.payload)
+}
+
+function isSubtitleSegment(value: unknown): value is BilibiliSubtitleSegment {
+  return isPlainRecord(value)
+    && hasOnlyKeys(value, ['start', 'end', 'text'])
+    && typeof value.start === 'number' && Number.isFinite(value.start) && value.start >= 0
+    && typeof value.end === 'number' && Number.isFinite(value.end) && value.end >= value.start
+    && typeof value.text === 'string' && value.text.trim() !== ''
+}
+
+export function isPageSubtitleTracksMessageEnvelope(value: unknown): value is PageSubtitleTracksMessageEnvelope {
+  return isPlainRecord(value)
+    && hasOnlyKeys(value, ['source', 'version', 'type', 'payload'])
+    && value.source === 'momentq-page' && value.version === 1 && value.type === 'PAGE_SUBTITLE_TRACKS'
+    && isPlainRecord(value.payload)
+    && hasOnlyKeys(value.payload, ['bvid', 'cid', 'status', 'tracks'])
+    && typeof value.payload.bvid === 'string' && value.payload.bvid.trim() !== ''
+    && typeof value.payload.cid === 'string' && value.payload.cid.trim() !== ''
+    && (value.payload.status === 'available' || value.payload.status === 'absent')
+    && Array.isArray(value.payload.tracks)
+    && ((value.payload.status === 'available' && value.payload.tracks.length > 0)
+      || (value.payload.status === 'absent' && value.payload.tracks.length === 0))
+    && value.payload.tracks.every(track => typeof track === 'string' && track.startsWith('https://'))
+}
+
+export function isPageSubtitleMessageEnvelope(value: unknown): value is PageSubtitleMessageEnvelope {
+  if (!isPlainRecord(value)
+    || !hasOnlyKeys(value, ['source', 'version', 'type', 'payload'])
+    || value.source !== 'momentq-page' || value.version !== 1 || value.type !== 'PAGE_SUBTITLE'
+    || !isPlainRecord(value.payload)
+    || !hasOnlyKeys(value.payload, ['bvid', 'cid', 'segments'])
+    || typeof value.payload.bvid !== 'string' || value.payload.bvid.trim() === ''
+    || typeof value.payload.cid !== 'string' || value.payload.cid.trim() === ''
+    || !Array.isArray(value.payload.segments)
+    || value.payload.segments.length === 0
+    || value.payload.segments.some(segment => !isSubtitleSegment(segment))) return false
+  return true
+}
+
+export function isPageSubtitlePositionMessageEnvelope(value: unknown): value is PageSubtitlePositionMessageEnvelope {
+  return isPlainRecord(value)
+    && hasOnlyKeys(value, ['source', 'version', 'type', 'payload'])
+    && value.source === 'momentq-page' && value.version === 1 && value.type === 'PAGE_SUBTITLE_POSITION'
+    && isPlainRecord(value.payload)
+    && hasOnlyKeys(value.payload, ['bvid', 'cid', 'currentTime'])
+    && typeof value.payload.bvid === 'string' && value.payload.bvid.trim() !== ''
+    && typeof value.payload.cid === 'string' && value.payload.cid.trim() !== ''
+    && typeof value.payload.currentTime === 'number' && Number.isFinite(value.payload.currentTime)
+    && value.payload.currentTime >= 0
+}

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { ensureState, readState, writeState } from '../src/state.ts'
+import { ensureState, readState, replaceTranscript, writeState } from '../src/state.ts'
 
 const roots: string[] = []
 
@@ -72,6 +72,21 @@ describe('MomentQ state persistence', () => {
     expect(second.created).toBe(false)
     expect(second.state.metadata.title).toBe('Updated title')
     expect(second.state.session).toEqual(first.state.session)
+  })
+
+  it('replaces transcript segments and records Bilibili coverage', async () => {
+    const directory = await freshDirectory()
+    await ensureState({ directory, identity, metadata, defaultInstructions: 'Default', maxInstructionsLength: 4000 })
+    const next = await replaceTranscript(directory, 'bilibili', [
+      { start: 0, end: 1.25, text: '第一句' },
+      { start: 1.25, end: 3, text: ' 第二句 ' },
+    ])
+    expect(next.transcript.source).toBe('bilibili')
+    expect(next.transcript.coveredRanges).toEqual([{ start: 0, end: 3 }])
+    expect((await readFile(join(directory, 'transcript.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line))).toEqual([
+      { start: 0, end: 1.25, text: '第一句' },
+      { start: 1.25, end: 3, text: '第二句' },
+    ])
   })
 
   it('serializes concurrent initialization into one valid state', async () => {
