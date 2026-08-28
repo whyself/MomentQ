@@ -99,6 +99,9 @@ describe('DSH UI reuse contract', () => {
     // Enabled and with-subtitle (disabled) states render the same lightness.
     expect(control).toContain('opacity: 0.4')
     expect(control).toContain('suppressClick')
+    // A re-injected control must retire the pre-reload orphan instead of
+    // mounting a second floating ball.
+    expect(control).toContain("document.getElementById('momentq-transcription-control')?.remove()")
   })
 
   it('latches the unconfigured-ASR warning so a loading video never flashes it', async () => {

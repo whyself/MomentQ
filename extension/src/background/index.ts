@@ -209,8 +209,15 @@ async function beginTranscription(tabId: number, streamId: string | undefined): 
     })
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
+    // A background-originated capture start (e.g. the page floating ball)
+    // can be rejected for lack of an extension-surface gesture; point the
+    // user at the side-panel button, which always has the gesture.
     const state = await readState(tabId) ?? initial
-    return await tabOperations.run(tabId, () => deactivateTranscription(tabId, state, `无法开始转录：${reason}`))
+    return await tabOperations.run(tabId, () => deactivateTranscription(
+      tabId,
+      state,
+      `无法开始转录（${reason}）。请在 MomentQ 侧边栏点击开始转录按钮。`,
+    ))
   }
 }
 

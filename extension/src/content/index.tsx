@@ -30,7 +30,8 @@ if (bridge.__momentqContentBridge !== true) {
   }
 
   const control = mountTranscriptionControl(async () => {
-    const state = await chrome.runtime.sendMessage({ type: 'MOMENTQ_TOGGLE_CURRENT_TRANSCRIPTION' }) as MomentQTabState | null
+    const state = await chrome.runtime.sendMessage({ type: 'MOMENTQ_TOGGLE_CURRENT_TRANSCRIPTION' })
+      .catch(() => null) as MomentQTabState | null
     control.update(state)
   })
 

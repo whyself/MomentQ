@@ -69,6 +69,10 @@ export function mountTranscriptionControl(onToggle: () => void | Promise<void>):
   const host = document.createElement('div')
   host.id = 'momentq-transcription-control'
   host.dataset.momentqVersion = chrome.runtime.getManifest().version
+  // A tab that predates an extension reload keeps the previous script's
+  // control alive but orphaned (its runtime context is dead). Mounting a
+  // fresh control must retire it, or two floating balls pile up.
+  document.getElementById('momentq-transcription-control')?.remove()
   const shadow = host.attachShadow({ mode: 'open' })
   const style = document.createElement('style')
   style.textContent = `${baseCss.replaceAll(':root', ':host')}\n${designCss.replaceAll('body', ':host')}\n${buttonCss}\n${hostCss}`
