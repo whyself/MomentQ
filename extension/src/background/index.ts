@@ -198,6 +198,11 @@ async function beginTranscription(tabId: number, streamId: string | undefined): 
     const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
     await client.ensureContent({ identity: initial.context.identity, metadata: initial.context.metadata })
     await ensureOffscreenDocument()
+    // The START below is worthless if the offscreen page has not registered
+    // its listener yet; a dropped START looks exactly like a dead button.
+    if (!await waitUntilOffscreenReady()) {
+      throw new Error('音频采集管线未就绪，请重试')
+    }
     return await tabOperations.run(tabId, async () => {
       const current = await readState(tabId)
       if (current === null || current.transcription !== 'inactive') return await readState(tabId)
@@ -312,9 +317,24 @@ async function applyAsrSession(message: AsrSessionMessage): Promise<void> {
 /** After a service-worker restart, re-attach to a live offscreen session. */
 async function restoreAsrSession(): Promise<void> {
   const reply = await chrome.runtime.sendMessage({ type: 'MOMENTQ_ASR_QUERY' }).catch(() => null) as AsrSessionMessage | null
-  if (reply !== null && isRecord(reply)) {
-    await applyAsrSession(reply as AsrSessionMessage)
+  if (reply !== null && isRecord(reply) && reply.type === 'MOMENTQ_ASR_SESSION') {
+    await applyAsrSession(reply)
   }
+}
+
+/**
+ * A freshly created offscreen document has not necessarily registered its
+ * message listener when chrome.offscreen.createDocument resolves; a START
+ * sent into that gap is dropped without any error and the toggle just sits
+ * there. Probe until the offscreen answers, then send.
+ */
+async function waitUntilOffscreenReady(): Promise<boolean> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const reply = await chrome.runtime.sendMessage({ type: 'MOMENTQ_ASR_QUERY' }).catch(() => null) as AsrSessionMessage | null
+    if (reply !== null && isRecord(reply) && reply.type === 'MOMENTQ_ASR_SESSION') return true
+    await new Promise(resolve => setTimeout(resolve, 250))
+  }
+  return false
 }
 
 /**

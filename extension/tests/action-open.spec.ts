@@ -129,4 +129,19 @@ describe('panel-open bridge recovery', () => {
     expect(content.slice(content.indexOf('}', content.indexOf('function runtimeSend')) + 1))
       .not.toMatch(/chrome\.runtime\.sendMessage\(/)
   })
+
+  it('waits for the offscreen listener before sending START', async () => {
+    const background = await readFile(join(import.meta.dirname, '..', 'src', 'background', 'index.ts'), 'utf8')
+    // createDocument resolving does not mean the offscreen listener is up; a
+    // START sent into that gap is dropped and the toggle looks dead.
+    expect(background).toContain('async function waitUntilOffscreenReady')
+    const begin = background.slice(background.indexOf('async function beginTranscription'))
+    expect(begin.indexOf('waitUntilOffscreenReady')).toBeLessThan(begin.indexOf("'MOMENTQ_ASR_START'"))
+    expect(begin).toContain('音频采集管线未就绪')
+    // The offscreen answers MOMENTQ_ASR_QUERY in-band so the probe and the
+    // worker-restart re-attach both observe it.
+    const offscreen = await readFile(join(import.meta.dirname, '..', 'src', 'offscreen', 'index.ts'), 'utf8')
+    expect(offscreen).toMatch(/MOMENTQ_ASR_QUERY[\s\S]{0,400}sendResponse/)
+    expect(background).toContain("reply.type === 'MOMENTQ_ASR_SESSION'")
+  })
 })

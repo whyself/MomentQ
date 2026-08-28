@@ -133,7 +133,7 @@ function toWebSocketUrl(companionBaseUrl: string): string {
   return `${protocol}//${parsed.host}`
 }
 
-chrome.runtime.onMessage.addListener((message: unknown) => {
+chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
   if (typeof message !== 'object' || message === null) return false
   const type = (message as { type?: unknown }).type
   if (type === 'MOMENTQ_ASR_START') {
@@ -161,8 +161,10 @@ chrome.runtime.onMessage.addListener((message: unknown) => {
     return false
   }
   if (type === 'MOMENTQ_ASR_QUERY') {
+    // Answer in-band: the caller awaits this value to learn that the
+    // offscreen listener is alive before sending MOMENTQ_ASR_START.
     const answer: AsrSessionMessage = { type: 'MOMENTQ_ASR_SESSION', tabId: session?.tabId ?? null }
-    void chrome.runtime.sendMessage(answer).catch(() => {})
+    sendResponse(answer)
     return false
   }
   return false
