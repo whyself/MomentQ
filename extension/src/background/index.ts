@@ -594,16 +594,20 @@ async function handleRequest(
       const previous = await readState(tabId)
       const incoming = message.context as BilibiliContext
       if (incoming.kind === 'vod') {
-        // The visible URL is authoritative. If it already maps to an accepted
-        // state, ignore every player snapshot for that URL; Bilibili preloads
-        // neighboring CIDs and those transient values must never reach UI.
-        if (previous !== null && sameContentLocation(currentTab?.url, previous.context.url)) return previous
+        // The player snapshot owns what is playing now. An identical identity
+        // is a no-op; anything else re-verifies. A part switch often keeps a
+        // p-less URL, so the visible URL alone cannot veto the rebind — the
+        // previously accepted state must not swallow a changed player cid.
+        if (previous !== null && previous.context.kind === 'vod'
+          && previous.context.identity.bvid === incoming.identity.bvid
+          && previous.context.identity.cid === incoming.identity.cid) return previous
         const verified = await resolveSnapshotViaBilibiliApi({
           url: currentTab?.url ?? incoming.url,
           title: incoming.metadata.title,
           creator: incoming.metadata.creator,
           vod: {
             bvid: incoming.identity.bvid,
+            cid: incoming.identity.cid,
             ...(incoming.metadata.part?.number === undefined ? {} : { pageNumber: incoming.metadata.part.number }),
           },
         })

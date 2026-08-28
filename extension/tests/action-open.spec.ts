@@ -86,4 +86,17 @@ describe('panel-open bridge recovery', () => {
     expect(toggle.indexOf('streamId === null')).toBeLessThan(toggle.indexOf("type: 'MOMENTQ_ASR_START_FROM_PANEL'"))
     expect(toggle).toMatch(/streamId === null[\s\S]{0,400}MOMENTQ_TOGGLE_TRANSCRIPTION/)
   })
+
+  it('rebinds part switches that keep a p-less URL', async () => {
+    const background = await readFile(join(import.meta.dirname, '..', 'src', 'background', 'index.ts'), 'utf8')
+    const handler = background.slice(background.indexOf("if (type === 'MOMENTQ_PAGE_CONTEXT') {"))
+    // A changed player cid must re-verify and rebind even when the URL still
+    // maps to the same content location; only an identical cid is a no-op.
+    expect(handler).toContain('previous.context.identity.cid === incoming.identity.cid')
+    expect(handler).toContain('cid: incoming.identity.cid')
+    // The player-reported cid wins over the previously resolved identity on a
+    // part switch; overriding it snapped every switch back to the first part.
+    const bridge = await readFile(join(import.meta.dirname, '..', 'src', 'content', 'page-bridge.ts'), 'utf8')
+    expect(bridge).toContain('playerCidDiffers')
+  })
 })

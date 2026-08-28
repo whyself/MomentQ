@@ -161,7 +161,17 @@ function readSnapshotParts(): { snapshot: BilibiliPageSnapshot; rawVod: RawVodId
     ? undefined
     : { bvid: snapshot.vod.bvid, cid: snapshot.vod.cid, aid: snapshot.vod.aid }
   if (snapshot.vod !== undefined && resolvedVodIdentity !== undefined) {
-    snapshot.vod = { ...snapshot.vod, ...resolvedVodIdentity }
+    // The player's cid describes what is playing right now; the resolved
+    // identity verified an earlier snapshot. A diverging cid within the same
+    // video is a part switch (Bilibili's SPA often keeps the URL p-less), and
+    // overriding it would snap every part switch back to the previously
+    // resolved part.
+    const playerCidDiffers = snapshot.vod.bvid === resolvedVodIdentity.bvid
+      && snapshot.vod.cid !== undefined
+      && String(snapshot.vod.cid) !== resolvedVodIdentity.cid
+    if (!playerCidDiffers) {
+      snapshot.vod = { ...snapshot.vod, ...resolvedVodIdentity }
+    }
   }
   return { snapshot, rawVod }
 }

@@ -78,10 +78,13 @@ export function createBilibiliContextResolver(options: {
     const location = parseBilibiliLocation(snapshot.url)
     if (location?.kind !== 'vod') return null
 
-    const cached = cache.get(location.bvid)
+    // Multi-part videos resolve per part: keying by bvid alone made every
+    // part switch reuse the first-resolved part's context.
+    const cacheKey = `${location.bvid}:${location.requestedPart ?? snapshot.vod?.cid ?? 'default'}`
+    const cached = cache.get(cacheKey)
     if (cached !== undefined) {
-      cache.delete(location.bvid)
-      cache.set(location.bvid, cached)
+      cache.delete(cacheKey)
+      cache.set(cacheKey, cached)
       return cached
     }
 
@@ -127,7 +130,7 @@ export function createBilibiliContextResolver(options: {
       },
     })
     if (context === null) return null
-    cache.set(location.bvid, context)
+    cache.set(cacheKey, context)
     if (cache.size > CONTEXT_CACHE_LIMIT) {
       const oldest = cache.keys().next().value
       if (oldest !== undefined) cache.delete(oldest)
