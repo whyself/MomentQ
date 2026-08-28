@@ -117,13 +117,16 @@ export async function startCompanionServer(
       if (request.method === 'GET') {
         const baidu = config.baidu
         sendJson(200, {
-          provider: config.provider,
-          baidu: {
-            configured: baiduConfigured(config.baidu),
-            appId: baidu.appId ?? null,
-            apiKeyMasked: maskSecret(baidu.apiKey),
-            secretKeySet: baidu.secretKey !== undefined,
-            devPid: baidu.devPid,
+          ok: true,
+          value: {
+            provider: config.provider,
+            baidu: {
+              configured: baiduConfigured(config.baidu),
+              appId: baidu.appId ?? null,
+              apiKeyMasked: maskSecret(baidu.apiKey),
+              secretKeySet: baidu.secretKey !== undefined,
+              devPid: baidu.devPid,
+            },
           },
         })
         return

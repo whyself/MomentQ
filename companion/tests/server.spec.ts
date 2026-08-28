@@ -210,9 +210,12 @@ describe('companion ASR server', () => {
         ok: true, provider: 'baidu', configured: true, configApi: true,
       })
       await expect((await fetch(`${base}/config`)).json()).resolves.toEqual({
-        provider: 'baidu',
-        baidu: {
-          configured: true, appId: 'aid', apiKeyMasked: 'ab****gh', secretKeySet: true, devPid: 80001,
+        ok: true,
+        value: {
+          provider: 'baidu',
+          baidu: {
+            configured: true, appId: 'aid', apiKeyMasked: 'ab****gh', secretKeySet: true, devPid: 80001,
+          },
         },
       })
       // Credentials persist to the local file for the next start.

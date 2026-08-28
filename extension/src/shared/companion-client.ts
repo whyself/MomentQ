@@ -73,8 +73,11 @@ export async function saveCompanionBaiduCredentials(
   input: { appId: string; apiKey: string; secretKey: string },
   fetcher: typeof fetch = globalThis.fetch.bind(globalThis),
 ): Promise<void> {
+  // The JSON content-type triggers a CORS preflight; the companion answers
+  // OPTIONS on /config, and without it the server would reject the body.
   await companionCall<{ saved: true }>(baseUrl, {
     method: 'POST',
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify(input),
   }, fetcher)
 }
