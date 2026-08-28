@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { Button, FishLogo, IconCloseOutline16, IconPlusOutline16, IconSendOutline16, MarkdownText } from '../dsh/primitives'
 import { IconPauseOutline16, IconPlayOutline16 } from '../vendor/deepseek-harness/packages/client/ui-primitives/src/icons/index.tsx'
+import modalCss from '../vendor/deepseek-harness/packages/client/ui-primitives/src/Modal.module.css'
 import type { ConversationHistoryEntry, MessageStreamEvent, SubmitMessageResult } from '../shared/host-client'
 import type { MomentQTabState } from '../shared/protocol'
 import assistantCss from '../vendor/deepseek-harness/packages/client/ui-conversation/src/client/chat/AssistantMarkdown.module.css'
@@ -53,7 +54,11 @@ function ContextHeader({ state, settings, transcriptionToggle }: {
  * reliable path: the click handler runs on an extension surface, so the
  * tabCapture user-gesture gate is satisfied before the request is relayed.
  */
-function TranscriptionToggle({ state, onToggle }: { state: MomentQTabState | null; onToggle: () => void }) {
+function TranscriptionToggle({ state, asrConfigured, onToggle }: {
+  state: MomentQTabState | null
+  asrConfigured: boolean | null
+  onToggle: () => void
+}) {
   if (state === null) return null
   const blockedBySubtitles = state.subtitleSource !== 'asr'
     && (state.subtitleSegments?.length ?? 0) > 0
@@ -62,12 +67,15 @@ function TranscriptionToggle({ state, onToggle }: { state: MomentQTabState | nul
   const label = state.transcription === 'inactive'
     ? '开始转录'
     : active ? '暂停转录' : '继续转录'
+  const hint = asrConfigured === false ? '（百度云未配置）' : ''
   return (
     <Button
       variant="toolbar"
       size="sm"
-      aria-label={label}
-      title={state.transcriptionError !== undefined ? `${label}（${state.transcriptionError}）` : label}
+      aria-label={`${label}${hint}`}
+      title={state.transcriptionError !== undefined
+        ? `${label}（${state.transcriptionError}）`
+        : `${label}${hint}`}
       icon={active ? <IconPauseOutline16 size={16} /> : <IconPlayOutline16 size={16} />}
       onClick={onToggle}
     />
@@ -159,14 +167,15 @@ function Composer({ available, draft, pending, hero, frame, onCaptureFrame, onPa
           {frame !== null && (
             <div className={inputCss.accessory} aria-label="待发送图片">
               <img src={frame.dataUrl} alt={frame.name} style={{ maxWidth: '160px', maxHeight: '90px', borderRadius: '8px' }} />
-              <Button
-                variant="toolbar"
-                size="sm"
+              <button
+                type="button"
+                className={modalCss.close}
                 aria-label="移除图片"
                 title="移除图片"
-                icon={<IconCloseOutline16 size={16} />}
                 onClick={onRemoveFrame}
-              />
+              >
+                <IconCloseOutline16 size={14} />
+              </button>
             </div>
           )}
           <div className={inputCss.grow}>
@@ -289,11 +298,13 @@ function ConversationTranscript({ entries, pending, error }: {
   )
 }
 
-export function ConversationView({ state, capturedFrame, playbackTime, settings, onCaptureFrame, onLoadHistory, onSubmit, onToggleTranscription }: {
+export function ConversationView({ state, capturedFrame, playbackTime, settings, asrConfigured, onCaptureFrame, onLoadHistory, onSubmit, onToggleTranscription }: {
   state: MomentQTabState | null
   capturedFrame?: string | null
   playbackTime: number | undefined
   settings: ReactNode
+  /** Tri-state from companion health: null = unknown/unreachable. */
+  asrConfigured?: boolean | null
   onCaptureFrame: () => Promise<string | null>
   onLoadHistory: (state: MomentQTabState) => Promise<ConversationHistoryEntry[]>
   onSubmit: (
@@ -486,6 +497,9 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
   }
 
   const active = entries.length > 0 || pending || error !== null
+  const asrUnconfigured = asrConfigured === false
+    && state !== null
+    && (state.subtitleSegments?.length ?? 0) === 0
   return (
     <section className={`momentq-conversation ${conversationCss.root}`} data-phase={active ? 'active' : 'hero'}>
       <ContextHeader
@@ -493,7 +507,7 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
         settings={settings}
         transcriptionToggle={onToggleTranscription === undefined
           ? null
-          : <TranscriptionToggle state={state} onToggle={onToggleTranscription} />}
+          : <TranscriptionToggle state={state} asrConfigured={asrConfigured ?? null} onToggle={onToggleTranscription} />}
       />
       <div className={conversationCss.scrollBody}>
         <div className={conversationCss.viewArea}>
@@ -510,6 +524,11 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
           )}
         </div>
       <div className={`${conversationCss.composerSeat} ${active ? '' : conversationCss.composerHero}`}>
+          {asrUnconfigured && (
+            <div className={chatCss.openError} role="status" data-asr-warning>
+              百度语音识别未配置：请打开设置 → 语音识别，填写百度云凭据
+            </div>
+          )}
           <SubtitleTicker state={state} playbackTime={playbackTime} />
           {state?.transcriptionError !== undefined && (
             <div className={chatCss.openError} role="alert" data-transcription-error>

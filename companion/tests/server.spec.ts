@@ -1,4 +1,7 @@
 import { WebSocket, WebSocketServer } from 'ws'
+import { readFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { startCompanionServer } from '../src/server'
 import type { CompanionConfig } from '../src/config'
@@ -35,7 +38,10 @@ function makeReader(socket: WebSocket): () => Promise<CompanionServerMessage> {
   })
 }
 
-async function startHarness(): Promise<{
+async function startHarness(overrides: {
+  baidu?: CompanionConfig['baidu']
+  configFile?: string
+} = {}): Promise<{
   port: number
   connect: () => Promise<{ socket: WebSocket; nextMessage: () => Promise<CompanionServerMessage> }>
   upstreamFrames: unknown[]
@@ -75,9 +81,14 @@ async function startHarness(): Promise<{
     throw new Error(`unexpected fetch ${url}`)
   }) as unknown as typeof fetch
 
-  const handle = await startCompanionServer(config, {
+  const effective: CompanionConfig = {
+    ...config,
+    baidu: overrides.baidu ?? config.baidu,
+  }
+  const handle = await startCompanionServer(effective, {
     fetcher,
     socketFactory: () => new WebSocket(`ws://127.0.0.1:${upstreamAddress.port}`),
+    ...(overrides.configFile === undefined ? {} : { configFilePath: overrides.configFile }),
   })
 
   return {
@@ -173,6 +184,49 @@ describe('companion ASR server', () => {
       socket.send('not-json')
       expect(await nextMessage()).toMatchObject({ type: 'error', code: 'invalid-message' })
       socket.close()
+    } finally {
+      await harness.close()
+    }
+  })
+
+  it('stores settings-page credentials locally and redacts them on read', async () => {
+    const configFile = join(tmpdir(), `momentq-companion-test-${Date.now()}-${Math.random().toString(36).slice(2)}.json`)
+    const harness = await startHarness({ baidu: { devPid: 80001 }, configFile })
+    try {
+      const base = `http://127.0.0.1:${harness.port}`
+      await expect((await fetch(`${base}/health`)).json()).resolves.toEqual({
+        ok: true, provider: 'baidu', configured: false,
+      })
+
+      const saved = await fetch(`${base}/config`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ appId: 'aid', apiKey: 'abcdefgh', secretKey: 'sk' }),
+      })
+      expect(saved.status).toBe(200)
+      expect(await saved.json()).toEqual({ ok: true, value: { saved: true } })
+
+      await expect((await fetch(`${base}/health`)).json()).resolves.toEqual({
+        ok: true, provider: 'baidu', configured: true,
+      })
+      await expect((await fetch(`${base}/config`)).json()).resolves.toEqual({
+        provider: 'baidu',
+        baidu: {
+          configured: true, appId: 'aid', apiKeyMasked: 'ab****gh', secretKeySet: true, devPid: 80001,
+        },
+      })
+      // Credentials persist to the local file for the next start.
+      const stored = JSON.parse(await readFile(configFile, 'utf8')) as {
+        baidu: { appId: string; apiKey: string; secretKey: string }
+      }
+      expect(stored.baidu).toEqual({ appId: 'aid', apiKey: 'abcdefgh', secretKey: 'sk', devPid: 80001 })
+
+      const bad = await fetch(`${base}/config`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ appId: 'aid' }),
+      })
+      expect(bad.status).toBe(400)
     } finally {
       await harness.close()
     }

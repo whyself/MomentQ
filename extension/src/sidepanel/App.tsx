@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { MomentQTabState } from '../shared/protocol'
 import { MomentQClient, type MessageStreamEvent, type SubmitMessageResult } from '../shared/host-client'
+import { fetchCompanionConfig } from '../shared/companion-client'
 import { loadSettings } from '../shared/settings-store'
 import type { ExtensionSettings } from '../shared/settings'
 import { ConversationView } from './ConversationView'
@@ -57,6 +58,16 @@ export function App({ subscribe }: {
     window.addEventListener('momentq-frame-captured', onFrame)
     return () => window.removeEventListener('momentq-frame-captured', onFrame)
   }, [])
+
+  const [asrConfigured, setAsrConfigured] = useState<boolean | null>(null)
+  useEffect(() => {
+    if (settings === null) return
+    let active = true
+    fetchCompanionConfig(settings.companionBaseUrl)
+      .then(view => { if (active) setAsrConfigured(view.baidu.configured) })
+      .catch(() => { if (active) setAsrConfigured(null) })
+    return () => { active = false }
+  }, [settings])
 
   function playbackStamp(seconds: number | undefined): string | null {
     if (seconds === undefined || !Number.isFinite(seconds) || seconds < 0) return null
@@ -136,6 +147,7 @@ export function App({ subscribe }: {
         onCaptureFrame={captureCurrentFrame}
         onSubmit={submitMessage}
         {...(hasChromeRuntime ? { onToggleTranscription: toggleTranscription } : {})}
+        {...(asrConfigured === null ? {} : { asrConfigured })}
         settings={settings === null ? null : (
           <SettingsView settings={settings} onSettingsChange={setSettings} />
         )}

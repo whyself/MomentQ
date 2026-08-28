@@ -15,15 +15,17 @@
 ## 运行
 
 ```powershell
-$env:BAIDU_ASR_APP_ID = "..."
-$env:BAIDU_ASR_API_KEY = "..."     # 即百度智能云 API Key
-$env:BAIDU_ASR_SECRET_KEY = "..."
 pnpm --filter momentq-companion build
 node dist/index.js
 ```
 
-环境变量：`MOMENTQ_COMPANION_PORT`（默认 3090）、`MOMENTQ_HOST_BASE_URL`（默认 `http://127.0.0.1:3182`）、`BAIDU_ASR_DEV_PID`（默认 80001 中文普通话）。未配置密钥时服务照常启动，`GET /health` 返回 `configured:false`，开始转录会得到 `provider-not-configured` 错误。
+百度云凭据有两种配置方式：
+
+1. **设置页（推荐）**：打开 MomentQ 设置 → 语音识别，填写 App ID / API Key / Secret Key，保存后经 `POST /config` 写入本机 companion 的凭据文件（默认 `~/.momentq-companion.json`，可用 `MOMENTQ_COMPANION_CONFIG_FILE` 改路径），立即生效、无需重启。设置页读到的永远是脱敏视图（App ID 明文、Key 打码），凭据本体只存在 companion 这一侧。
+2. **环境变量**：`BAIDU_ASR_APP_ID` / `BAIDU_ASR_API_KEY` / `BAIDU_ASR_SECRET_KEY`（另有 `MOMENTQ_COMPANION_PORT` 默认 3090、`MOMENTQ_HOST_BASE_URL` 默认 `http://127.0.0.1:3182`、`BAIDU_ASR_DEV_PID` 默认 80001）。env 与文件同时存在时 env 优先。
+
+未配置时服务照常启动，`GET /health` 返回 `configured:false`，扩展侧转录按钮上方会出现红色警告。
 
 ## Provider 边界
 
-Provider 是 companion 内部的可插拔接口：云端（百度先行，腾讯/火山/Deepgram 可后续增加）与本地模型（如 FunASR、sherpa-onnx 真流式引擎）实现同一接口。接入新 Provider 不需要改动扩展与字幕层；扩展与 companion 之间只交换播放时钟、provider 选择与最终字幕段。
+Provider 是 companion 内部的可插拔接口：云端（百度先行，腾讯/火山/Deepgram 可后续增加）与本地模型（如 FunASR、sherpa-onnx 真流式引擎）实现同一接口。接入新 Provider 不需要改动扩展与字幕层；扩展与 companion 之间只交换播放状态、provider 选择与最终字幕段。

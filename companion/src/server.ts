@@ -3,7 +3,7 @@
 import { createServer } from 'node:http'
 import { WebSocketServer, type WebSocket } from 'ws'
 import type { CompanionConfig } from './config'
-import { baiduConfigured } from './config'
+import { baiduConfigured, configFilePath, loadStoredBaiduCredentials, saveStoredBaiduCredentials } from './config'
 import { AsrSession } from './session'
 import { isCompanionClientMessage } from '../../shared/src/companion-protocol'
 
@@ -13,24 +13,120 @@ export type CompanionServerHandle = {
 }
 
 const MAX_FRAME_BYTES = 64 * 1024
+const MAX_CONFIG_BODY_BYTES = 16 * 1024
 
-export function startCompanionServer(
+function maskSecret(value: string | undefined): string | null {
+  if (value === undefined || value === '') return null
+  if (value.length <= 4) return '****'
+  return `${value.slice(0, 2)}****${value.slice(-2)}`
+}
+
+function credentialInput(value: unknown): { appId: string; apiKey: string; secretKey: string; devPid?: number } | null {
+  if (typeof value !== 'object' || value === null) return null
+  const record = value as { appId?: unknown; apiKey?: unknown; secretKey?: unknown; devPid?: unknown }
+  const { appId, apiKey, secretKey } = record
+  const valid = (input: unknown): input is string => typeof input === 'string' && input.trim() !== '' && input.length <= 256
+  if (!valid(appId) || !valid(apiKey) || !valid(secretKey)) return null
+  if (record.devPid !== undefined && (typeof record.devPid !== 'number' || !Number.isSafeInteger(record.devPid) || record.devPid <= 0)) return null
+  return {
+    appId: appId.trim(),
+    apiKey: apiKey.trim(),
+    secretKey: secretKey.trim(),
+    ...(record.devPid === undefined ? {} : { devPid: record.devPid }),
+  }
+}
+
+async function readJsonBody(req: import('node:http').IncomingMessage, limit: number): Promise<unknown> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    size += buffer.length
+    if (size > limit) throw new Error('request body exceeds the limit')
+    chunks.push(buffer)
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+}
+
+export async function startCompanionServer(
   config: CompanionConfig,
   options: {
     fetcher?: typeof fetch | undefined
     now?: (() => number) | undefined
     socketFactory?: ((url: string) => WebSocket) | undefined
+    configFilePath?: string | undefined
   } = {},
 ): Promise<CompanionServerHandle> {
-  const server = createServer((request, response) => {
-    if (request.method === 'GET' && (request.url === '/health' || request.url === '/health/')) {
-      const body = JSON.stringify({
+  // Credentials saved from the settings page live in a local file; env vars
+  // keep precedence so headless setups are unaffected.
+  const stored = await loadStoredBaiduCredentials(options.configFilePath ?? configFilePath())
+  if (stored !== null) {
+    config.baidu.appId ??= stored.appId
+    config.baidu.apiKey ??= stored.apiKey
+    config.baidu.secretKey ??= stored.secretKey
+  }
+  const server = createServer(async (request, response) => {
+    const path = request.url?.split('?')[0] ?? '/'
+    const sendJson = (status: number, body: unknown): void => {
+      const content = JSON.stringify(body)
+      response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(content) })
+      response.end(content)
+    }
+    if (request.method === 'GET' && (path === '/health' || path === '/health/')) {
+      sendJson(200, {
         ok: true,
         provider: config.provider,
         configured: baiduConfigured(config.baidu),
       })
-      response.writeHead(200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) })
-      response.end(body)
+      return
+    }
+    if (path === '/config' || path === '/config/') {
+      // The settings page reads a redacted view; credentials set here are
+      // stored on this machine only and never echoed back in clear.
+      if (request.method === 'GET') {
+        const baidu = config.baidu
+        sendJson(200, {
+          provider: config.provider,
+          baidu: {
+            configured: baiduConfigured(config.baidu),
+            appId: baidu.appId ?? null,
+            apiKeyMasked: maskSecret(baidu.apiKey),
+            secretKeySet: baidu.secretKey !== undefined,
+            devPid: baidu.devPid,
+          },
+        })
+        return
+      }
+      if (request.method === 'POST') {
+        try {
+          if ((request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() ?? '') !== 'application/json') {
+            sendJson(415, { ok: false, error: { code: 'invalid-request', message: 'JSON required' } })
+            return
+          }
+          const input = credentialInput(await readJsonBody(request, MAX_CONFIG_BODY_BYTES))
+          if (input === null) {
+            sendJson(400, { ok: false, error: { code: 'invalid-request', message: 'appId / apiKey / secretKey 都是必填的字符串' } })
+            return
+          }
+          config.baidu = {
+            appId: input.appId,
+            apiKey: input.apiKey,
+            secretKey: input.secretKey,
+            devPid: input.devPid ?? config.baidu.devPid,
+          }
+          await saveStoredBaiduCredentials(options.configFilePath ?? configFilePath(), {
+            appId: config.baidu.appId!,
+            apiKey: config.baidu.apiKey!,
+            secretKey: config.baidu.secretKey!,
+            devPid: config.baidu.devPid,
+          })
+          sendJson(200, { ok: true, value: { saved: true } })
+        } catch {
+          sendJson(400, { ok: false, error: { code: 'invalid-request', message: 'MomentQ companion received an invalid config body' } })
+        }
+        return
+      }
+      sendJson(405, { ok: false, error: { code: 'invalid-request', message: 'GET or POST required' } })
       return
     }
     response.writeHead(404).end()

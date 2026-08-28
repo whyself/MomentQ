@@ -12,3 +12,4 @@ data/
 extension/releases/
 extension/prototype/
 
+*.local.json

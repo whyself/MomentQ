@@ -1,5 +1,8 @@
 /** Companion runtime configuration. Credentials never pass through the extension. */
 
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { dirname, resolve } from 'node:path'
+
 export type BaiduAsrConfig = {
   appId?: string
   apiKey?: string
@@ -12,6 +15,13 @@ export type CompanionConfig = {
   hostBaseUrl: string
   provider: 'baidu'
   baidu: BaiduAsrConfig
+}
+
+export type StoredBaiduCredentials = {
+  appId: string
+  apiKey: string
+  secretKey: string
+  devPid: number
 }
 
 function port(value: string | undefined, fallback: number): number {
@@ -38,4 +48,44 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): CompanionConfi
 
 export function baiduConfigured(baidu: BaiduAsrConfig): boolean {
   return baidu.appId !== undefined && baidu.apiKey !== undefined && baidu.secretKey !== undefined
+}
+
+/**
+ * Credentials entered in the settings page persist next to the user's home
+ * directory (never inside the extension, never in the repository); env vars
+ * keep precedence for headless setups.
+ */
+export function configFilePath(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.MOMENTQ_COMPANION_CONFIG_FILE?.trim()
+  if (configured !== undefined && configured !== '') return resolve(configured)
+  return resolve(process.env.USERPROFILE ?? process.env.HOME ?? '.', '.momentq-companion.json')
+}
+
+function storedCredentials(value: unknown): StoredBaiduCredentials | null {
+  if (typeof value !== 'object' || value === null) return null
+  const baidu = (value as { baidu?: unknown }).baidu
+  if (typeof baidu !== 'object' || baidu === null) return null
+  const record = baidu as { appId?: unknown; apiKey?: unknown; secretKey?: unknown; devPid?: unknown }
+  const { appId, apiKey, secretKey } = record
+  if (typeof appId !== 'string' || appId === '' || typeof apiKey !== 'string' || apiKey === ''
+    || typeof secretKey !== 'string' || secretKey === '') return null
+  return {
+    appId,
+    apiKey,
+    secretKey,
+    devPid: port(typeof record.devPid === 'number' ? String(record.devPid) : undefined, 80001),
+  }
+}
+
+export async function loadStoredBaiduCredentials(path: string): Promise<StoredBaiduCredentials | null> {
+  try {
+    return storedCredentials(JSON.parse(await readFile(path, 'utf8')))
+  } catch {
+    return null
+  }
+}
+
+export async function saveStoredBaiduCredentials(path: string, value: StoredBaiduCredentials): Promise<void> {
+  await mkdir(dirname(path), { recursive: true })
+  await writeFile(path, `${JSON.stringify({ baidu: value }, null, 2)}\n`, 'utf8')
 }

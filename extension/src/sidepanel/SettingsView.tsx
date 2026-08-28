@@ -9,6 +9,7 @@ import { sanitizeSettings } from '../shared/settings'
 import { ASR_PROVIDERS } from '../shared/settings'
 import type { AsrProviderId, ExtensionSettings, ThemePreference } from '../shared/settings'
 import { MomentQClient } from '../shared/host-client'
+import { fetchCompanionConfig, saveCompanionBaiduCredentials, type CompanionConfigView } from '../shared/companion-client'
 import { loadModelApiKey, saveModelApiKey, saveSettings } from '../shared/settings-store'
 import { SettingsRoot as UpstreamSettingsRoot } from '../vendor/deepseek-harness/packages/client/ui-settings-general/src/client/SettingsRoot.tsx'
 import { TriggerContent, HeaderContent, CloseLabel } from '../vendor/deepseek-harness/packages/client/ui-settings-general/src/client/chrome.tsx'
@@ -163,8 +164,71 @@ function AsrSection({ draft, setDraft, saving, saveError, onSave }: {
   setDraft: (settings: ExtensionSettings) => void
   saving: boolean
   saveError: string | null
+  /** Parent save: settings + model key + close. Runs after credentials save. */
   onSave: () => void
 }) {
+  const [credentialView, setCredentialView] = useState<CompanionConfigView | null>(null)
+  const [credentialUnreachable, setCredentialUnreachable] = useState(false)
+  const [appId, setAppId] = useState('')
+  const [apiKey, setApiKey] = useState('')
+  const [secretKey, setSecretKey] = useState('')
+  const [savingCredentials, setSavingCredentials] = useState(false)
+  const [credentialError, setCredentialError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+    setCredentialUnreachable(false)
+    fetchCompanionConfig(draft.companionBaseUrl).then(view => {
+      if (!active) return
+      setCredentialView(view)
+      setAppId(current => current === '' ? view.baidu.appId ?? '' : current)
+    }).catch(() => {
+      if (active) {
+        setCredentialView(null)
+        setCredentialUnreachable(true)
+      }
+    })
+    return () => { active = false }
+  }, [draft.companionBaseUrl])
+
+  const handleSave = (): void => {
+    void (async () => {
+      setCredentialError(null)
+      const typed = appId.trim() !== '' || apiKey !== '' || secretKey !== ''
+      if (typed && (appId.trim() === '' || apiKey === '' || secretKey === '')) {
+        setCredentialError('App ID、API Key、Secret Key 需要同时填写')
+        return
+      }
+      try {
+        setSavingCredentials(true)
+        if (typed) {
+          await saveCompanionBaiduCredentials(draft.companionBaseUrl, {
+            appId: appId.trim(),
+            apiKey,
+            secretKey,
+          })
+          const view = await fetchCompanionConfig(draft.companionBaseUrl)
+          setCredentialView(view)
+          setApiKey('')
+          setSecretKey('')
+        }
+      } catch (error) {
+        setCredentialError(error instanceof Error ? error.message : '保存百度云凭据失败')
+        return
+      } finally {
+        setSavingCredentials(false)
+      }
+      onSave()
+    })()
+  }
+
+  const baidu = credentialView?.baidu
+  const configuredText = credentialUnreachable
+    ? '无法连接本地 companion'
+    : baidu === undefined
+      ? '读取中…'
+      : baidu.configured ? '已配置' : '未配置'
+
   return (
     <div>
       <Row title="伴随服务地址" description="音频捕获与语音识别都在本地 companion 内完成，密钥不进入扩展。">
@@ -177,6 +241,36 @@ function AsrSection({ draft, setDraft, saving, saveError, onSave }: {
         items={ASR_PROVIDERS.map(({ id, label }) => ({ id, label }))}
         onSelect={id => { setDraft({ ...draft, asrProvider: id as AsrProviderId }) }}
       />
+      <Row title="百度云 App ID" description={`配置状态：${configuredText}${baidu?.apiKeyMasked === null ? '' : `，API Key ${baidu?.apiKeyMasked ?? ''}`}`}>
+        <Input
+          value={appId}
+          name="baiduAppId"
+          autoComplete="off"
+          aria-label="百度云 App ID"
+          placeholder={baidu?.appId ?? '输入百度云 App ID'}
+          onChange={event => { setAppId(event.target.value) }}
+        />
+      </Row>
+      <Row title="百度云 API Key" description="只保存在本机 companion；修改时与 Secret Key 一起重新填写。">
+        <Input
+          type="password"
+          name="baiduApiKey"
+          autoComplete="off"
+          aria-label="百度云 API Key"
+          placeholder={baidu?.apiKeyMasked ?? '输入百度云 API Key'}
+          onChange={event => { setApiKey(event.target.value) }}
+        />
+      </Row>
+      <Row title="百度云 Secret Key" description={baidu?.secretKeySet === true ? '已保存。' : '尚未保存。'}>
+        <Input
+          type="password"
+          name="baiduSecretKey"
+          autoComplete="off"
+          aria-label="百度云 Secret Key"
+          placeholder={baidu?.secretKeySet === true ? '已保存' : '输入百度云 Secret Key'}
+          onChange={event => { setSecretKey(event.target.value) }}
+        />
+      </Row>
       <SelectRow
         title="字幕写入方式"
         description="控制识别结果追加或替换当前临时字幕。"
@@ -191,8 +285,8 @@ function AsrSection({ draft, setDraft, saving, saveError, onSave }: {
         items={[{ id: 'on', label: '开启' }, { id: 'off', label: '关闭' }]}
         onSelect={id => { setDraft({ ...draft, autoConnect: id === 'on' }) }}
       />
-      <Row title="连接状态" description="DSH Host 与 ASR companion 分别使用上方地址连接。" />
-      <SaveArea saving={saving} error={saveError} onSave={onSave} />
+      <Row title="连接状态" description="DSH Host 与百度云凭据分别保存在上方地址与本地 companion。" />
+      <SaveArea saving={saving || savingCredentials} error={credentialError ?? saveError} onSave={handleSave} />
     </div>
   )
 }
