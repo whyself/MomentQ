@@ -13,6 +13,7 @@ const hostCss = `
   right: 0;
   z-index: 2147483647;
   transform: translateY(-50%);
+  touch-action: none;
 }
 `
 
@@ -49,6 +50,10 @@ function Control({ state, onToggle }: { state: MomentQTabState | null; onToggle:
     <Button
       variant="toolbar"
       size="sm"
+      // One consistent tone: the disabled with-subtitle state sits at 0.4
+      // opacity, so the enabled state matches it instead of switching to a
+      // darker blob when subtitles are missing.
+      style={hasSubtitle ? undefined : { opacity: 0.4 }}
       aria-label={title}
       title={title}
       icon={active ? <IconPauseOutline16 size={16} /> : <IconPlayOutline16 size={16} />}
@@ -70,6 +75,52 @@ export function mountTranscriptionControl(onToggle: () => void | Promise<void>):
   const mount = document.createElement('div')
   shadow.append(style, mount)
   document.documentElement.append(host)
+
+  // Vertical drag along the right edge. A press that moves more than a few
+  // pixels is a drag (position follows the pointer, persisted for the
+  // session); a press that stays put is a click and toggles transcription.
+  let suppressClick = false
+  let pointerActive = false
+  let dragged = false
+  let startY = 0
+  let startTop = 0
+  const topStorageKey = 'momentq.transcriptionControlTop'
+  const clampTop = (top: number): number => Math.min(
+    Math.max(top, 8),
+    Math.max(window.innerHeight - host.offsetHeight - 8, 8),
+  )
+  const storedTop = Number(window.sessionStorage.getItem(topStorageKey))
+  if (Number.isFinite(storedTop) && storedTop >= 8) {
+    host.style.top = `${storedTop}px`
+    host.style.transform = 'translateY(0)'
+  }
+  host.addEventListener('pointerdown', (event: PointerEvent) => {
+    if (event.button !== 0) return
+    pointerActive = true
+    dragged = false
+    startY = event.clientY
+    startTop = host.getBoundingClientRect().top
+  })
+  window.addEventListener('pointermove', (event: PointerEvent) => {
+    if (!pointerActive) return
+    const offset = event.clientY - startY
+    if (!dragged && Math.abs(offset) < 4) return
+    dragged = true
+    const top = clampTop(startTop + offset)
+    host.style.top = `${top}px`
+    host.style.transform = 'translateY(0)'
+    window.sessionStorage.setItem(topStorageKey, String(top))
+  })
+  window.addEventListener('pointerup', () => {
+    if (!pointerActive) return
+    pointerActive = false
+    if (!dragged) return
+    // The drag ends with the browser synthesizing a click on the button;
+    // swallow exactly that one so moving the control never toggles.
+    suppressClick = true
+    window.setTimeout(() => { suppressClick = false }, 0)
+  })
+
   const root = createRoot(mount)
   const update = (state: MomentQTabState | null) => {
     host.dataset.contextIdentity = state?.context.kind === 'vod'
@@ -82,7 +133,10 @@ export function mountTranscriptionControl(onToggle: () => void | Promise<void>):
       : `${state.subtitleIdentity.bvid}:${state.subtitleIdentity.cid}`
     host.dataset.subtitleCount = String(state?.subtitleSegments?.length ?? 0)
     host.dataset.subtitleFingerprint = subtitleFingerprint(state)
-    root.render(<Control state={state} onToggle={() => { void onToggle() }} />)
+    root.render(<Control state={state} onToggle={() => {
+      // A drag ends with a synthesized click on the button; swallow it.
+      if (!suppressClick) void onToggle()
+    }} />)
   }
   update(null)
   return { update }

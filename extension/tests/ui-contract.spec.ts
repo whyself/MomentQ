@@ -92,6 +92,15 @@ describe('DSH UI reuse contract', () => {
     expect(`${control}\n${content}`).not.toContain('sidePanel.open')
   })
 
+  it('drags the page control vertically and keeps one tone in both states', async () => {
+    const control = await source('content', 'transcription-control.tsx')
+    expect(control).toContain('pointerdown')
+    expect(control).toContain('sessionStorage')
+    // Enabled and with-subtitle (disabled) states render the same lightness.
+    expect(control).toContain('opacity: 0.4')
+    expect(control).toContain('suppressClick')
+  })
+
   it('latches the unconfigured-ASR warning so a loading video never flashes it', async () => {
     const view = await source('sidepanel', 'ConversationView.tsx')
     expect(view).toContain('asrWarningLatched')
