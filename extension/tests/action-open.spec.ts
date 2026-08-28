@@ -99,4 +99,15 @@ describe('panel-open bridge recovery', () => {
     const bridge = await readFile(join(import.meta.dirname, '..', 'src', 'content', 'page-bridge.ts'), 'utf8')
     expect(bridge).toContain('playerCidDiffers')
   })
+
+  it('returns transcript ownership when a recognition session ends', async () => {
+    const background = await readFile(join(import.meta.dirname, '..', 'src', 'background', 'index.ts'), 'utf8')
+    const deactivate = background.slice(background.indexOf('async function deactivateTranscription'))
+    // A leftover 'asr' source suppressed every later Bilibili import for the
+    // tab; ending the session must strip it.
+    expect(deactivate).toContain("subtitleSource: _source")
+    // States already poisoned by older builds heal on the next panel open.
+    const heal = background.slice(background.indexOf('async function readOrResolveState'))
+    expect(heal).toContain("stored.subtitleSource === 'asr'")
+  })
 })

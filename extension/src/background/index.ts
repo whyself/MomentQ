@@ -39,6 +39,19 @@ const tabOperations = new TabOperationQueue()
 const subtitleSyncs = new Map<string, Promise<void>>()
 const publishRevisions = new Map<number, number>()
 
+/** Record the latest subtitle-index probe outcome for the panel to show. */
+async function writeProbeResult(tabId: number, bvid: string, cid: string, diagnostic: string): Promise<void> {
+  await tabOperations.run(tabId, async () => {
+    const state = await readState(tabId)
+    if (state?.context.kind !== 'vod'
+      || state.context.identity.bvid !== bvid
+      || state.context.identity.cid !== cid) return
+    const next: MomentQTabState = { ...state, subtitleDiagnostic: diagnostic }
+    await writeState(tabId, next)
+    publishState(tabId, next)
+  })
+}
+
 /** Tab owning the single offscreen ASR session, if any. */
 let asrTabId: number | null = null
 let clockPollTimer: ReturnType<typeof setInterval> | undefined
@@ -150,8 +163,12 @@ async function stopAsrSession(): Promise<void> {
 /** Mark a tab's transcription inactive and tear its session down. */
 async function deactivateTranscription(tabId: number, state: MomentQTabState, error?: string): Promise<MomentQTabState> {
   const { transcriptPreview: _preview, ...withoutPreview } = state
+  // An ended recognition must not keep owning the transcript. A leftover
+  // 'asr' source suppressed every later Bilibili import for the tab —
+  // including other videos, because SET_CONTEXT preserves the field.
+  const { subtitleSource: _source, ...withoutSource } = withoutPreview
   const next: MomentQTabState = {
-    ...withoutPreview,
+    ...withoutSource,
     transcription: 'inactive',
     ...(error === undefined ? {} : { transcriptionError: error }),
   }
@@ -374,6 +391,7 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
       verifiedSubtitleIdentities.add(verifyKey)
     } else {
       subtitleRetryNotBefore.set(verifyKey, Date.now() + SUBTITLE_RETRY_INTERVAL_MS)
+      await writeProbeResult(tabId, bvid, cid, report.diagnostic ?? '无轨道')
       return
     }
     const settings = await loadSettings()
@@ -503,7 +521,20 @@ async function syncPageSubtitleTracks(tabId: number, message: PageSubtitleTracks
 }
 
 async function readOrResolveState(tabId: number): Promise<MomentQTabState | null> {
-  const stored = await readState(tabId)
+  let stored = await readState(tabId)
+  // Heal states poisoned by an older build: a dead recognition left
+  // subtitleSource 'asr' behind, which suppressed every Bilibili import for
+  // the tab. An inactive transcription can never own the transcript.
+  if (stored !== null && stored.transcription === 'inactive' && stored.subtitleSource === 'asr') {
+    await tabOperations.run(tabId, async () => {
+      const state = await readState(tabId)
+      if (state === null || state.transcription !== 'inactive' || state.subtitleSource !== 'asr') return
+      const { subtitleSource: _source, ...withoutSource } = state
+      await writeState(tabId, withoutSource)
+      publishState(tabId, withoutSource)
+    })
+    stored = await readState(tabId)
+  }
   const tab = await chrome.tabs.get(tabId).catch(() => null)
   const url = tab?.url
   if (url !== undefined && stored !== null && sameContentLocation(url, stored.context.url)) {
