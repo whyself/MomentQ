@@ -109,11 +109,23 @@ function SubtitleTicker({ state, playbackTime }: { state: MomentQTabState | null
       : undefined
     : undefined
   if (window === null && (preview === undefined || preview === '')) {
-    return diagnostic === undefined ? null : (
-      <div className="momentq-subtitle-ticker" data-subtitle-diagnostic aria-live="off">
-        <div className="momentq-subtitle-line">{diagnostic}</div>
-      </div>
-    )
+    if (diagnostic !== undefined) {
+      return (
+        <div className="momentq-subtitle-ticker" data-subtitle-diagnostic aria-live="off">
+          <div className="momentq-subtitle-line">{diagnostic}</div>
+        </div>
+      )
+    }
+    // Segments exist but no playback clock has arrived: the ticker cannot
+    // place them. Saying so beats a silently empty panel.
+    if (segments.length > 0 && (playbackTime === undefined || !Number.isFinite(playbackTime))) {
+      return (
+        <div className="momentq-subtitle-ticker" data-subtitle-diagnostic aria-live="off">
+          <div className="momentq-subtitle-line">字幕已就绪，等待页面播放时钟…</div>
+        </div>
+      )
+    }
+    return null
   }
   const index = window?.index ?? -1
   const start = window?.start ?? 0

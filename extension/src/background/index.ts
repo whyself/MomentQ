@@ -163,12 +163,10 @@ async function stopAsrSession(): Promise<void> {
 /** Mark a tab's transcription inactive and tear its session down. */
 async function deactivateTranscription(tabId: number, state: MomentQTabState, error?: string): Promise<MomentQTabState> {
   const { transcriptPreview: _preview, ...withoutPreview } = state
-  // An ended recognition must not keep owning the transcript. A leftover
-  // 'asr' source suppressed every later Bilibili import for the tab —
-  // including other videos, because SET_CONTEXT preserves the field.
-  const { subtitleSource: _source, ...withoutSource } = withoutPreview
+  // subtitleSource stays as provenance for the imported finals; ownership is
+  // keyed on the live transcription state, not on this field.
   const next: MomentQTabState = {
-    ...withoutSource,
+    ...withoutPreview,
     transcription: 'inactive',
     ...(error === undefined ? {} : { transcriptionError: error }),
   }
@@ -320,6 +318,28 @@ async function restoreAsrSession(): Promise<void> {
 }
 
 /**
+ * Reloading the extension mid-recognition destroys the offscreen document,
+ * and with it the only thing that would ever report the session's end. Tab
+ * states then stay 'active'/'paused' forever and their 'asr' provenance
+ * blocks every later subtitle import. At worker startup, after re-attaching
+ * to any live session, retire every state that claims a session nobody owns.
+ */
+async function recoverOrphanedTranscription(): Promise<void> {
+  const tabs = await chrome.tabs.query({}).catch(() => [])
+  for (const tab of tabs) {
+    const tabId = tab.id
+    if (tabId === undefined || tabId === asrTabId) continue
+    const state = await readState(tabId)
+    if (state === null || state.transcription === 'inactive') continue
+    await tabOperations.run(tabId, async () => {
+      const current = await readState(tabId)
+      if (current === null || current.transcription === 'inactive') return
+      await deactivateTranscription(tabId, current)
+    })
+  }
+}
+
+/**
  * Tabs opened before an extension reload keep no live content script, which
  * starves the side panel of the playback clock (and thus the subtitle ticker)
  * until the page is refreshed. Re-inject on demand instead; the script is
@@ -397,12 +417,23 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
     const settings = await loadSettings()
     const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
     const segments = report.segments ?? []
-    // Never erase a valid durable transcript before the replacement track has
-    // been fetched and validated; a proven absence reconciles whatever is on
-    // file for this identity — stale tab-state segments and a mislabelled
-    // durable transcript alike.
-    await client.ensureContent({ identity: context.identity, metadata: context.metadata })
-    await client.syncTranscript(context.identity, 'bilibili', segments)
+    // ASR finals are this identity's transcript when the video has no
+    // Bilibili track; a proven-empty probe must not erase them, durably or
+    // from the panel. A real track still replaces them below.
+    const current = await readState(tabId)
+    const asrFinals = current?.context.kind === 'vod'
+      && current.context.identity.bvid === bvid
+      && current.context.identity.cid === cid
+      && current.subtitleSource === 'asr'
+      && (current.subtitleSegments?.length ?? 0) > 0
+    if (!(segments.length === 0 && asrFinals)) {
+      // Never erase a valid durable transcript before the replacement track has
+      // been fetched and validated; a proven absence reconciles whatever is on
+      // file for this identity — stale tab-state segments and a mislabelled
+      // durable transcript alike.
+      await client.ensureContent({ identity: context.identity, metadata: context.metadata })
+      await client.syncTranscript(context.identity, 'bilibili', segments)
+    }
     await tabOperations.run(tabId, async () => {
       const state = await readState(tabId)
       if (state?.context.kind !== 'vod'
@@ -455,30 +486,33 @@ async function syncPageSubtitleTracks(tabId: number, message: PageSubtitleTracks
   if (state?.context.kind !== 'vod'
     || state.context.identity.bvid !== message.payload.bvid
     || state.context.identity.cid !== message.payload.cid) return
-  // While recognition owns this content's transcript, neither a proven
-  // absence nor a late track may wipe or replace its accumulated rows.
-  if (state.subtitleSource === 'asr' || state.transcription !== 'inactive') return
+  // Only a live recognition session owns the transcript; an ended one keeps
+  // its finals as provenance until a real track replaces them.
+  if (state.transcription !== 'inactive') return
   const context = state.context
   const settings = await loadSettings()
   const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
   if (message.payload.status === 'absent') {
-    await client.ensureContent({ identity: context.identity, metadata: context.metadata })
-    await client.syncTranscript(context.identity, 'bilibili', [])
-    await tabOperations.run(tabId, async () => {
-      const current = await readState(tabId)
-      if (current?.context.kind !== 'vod'
-        || current.context.identity.bvid !== message.payload.bvid
-        || current.context.identity.cid !== message.payload.cid) return
-      const {
-        subtitleSegments: _segments,
-        subtitleIdentity: _identity,
-        subtitleSource: _source,
-        ...withoutSubtitle
-      } = current
-      const next = { ...withoutSubtitle, transcription: 'inactive' as const }
-      await writeState(tabId, next)
-      publishState(tabId, next)
-    })
+    const hasAsrFinals = state.subtitleSource === 'asr' && (state.subtitleSegments?.length ?? 0) > 0
+    if (!hasAsrFinals) {
+      await client.ensureContent({ identity: context.identity, metadata: context.metadata })
+      await client.syncTranscript(context.identity, 'bilibili', [])
+      await tabOperations.run(tabId, async () => {
+        const current = await readState(tabId)
+        if (current?.context.kind !== 'vod'
+          || current.context.identity.bvid !== message.payload.bvid
+          || current.context.identity.cid !== message.payload.cid) return
+        const {
+          subtitleSegments: _segments,
+          subtitleIdentity: _identity,
+          subtitleSource: _source,
+          ...withoutSubtitle
+        } = current
+        const next = { ...withoutSubtitle, transcription: 'inactive' as const }
+        await writeState(tabId, next)
+        publishState(tabId, next)
+      })
+    }
     return
   }
   // The background API import is authoritative. Page-world discovery is only
@@ -521,27 +555,14 @@ async function syncPageSubtitleTracks(tabId: number, message: PageSubtitleTracks
 }
 
 async function readOrResolveState(tabId: number): Promise<MomentQTabState | null> {
-  let stored = await readState(tabId)
-  // Heal states poisoned by an older build: a dead recognition left
-  // subtitleSource 'asr' behind, which suppressed every Bilibili import for
-  // the tab. An inactive transcription can never own the transcript.
-  if (stored !== null && stored.transcription === 'inactive' && stored.subtitleSource === 'asr') {
-    await tabOperations.run(tabId, async () => {
-      const state = await readState(tabId)
-      if (state === null || state.transcription !== 'inactive' || state.subtitleSource !== 'asr') return
-      const { subtitleSource: _source, ...withoutSource } = state
-      await writeState(tabId, withoutSource)
-      publishState(tabId, withoutSource)
-    })
-    stored = await readState(tabId)
-  }
+  const stored = await readState(tabId)
   const tab = await chrome.tabs.get(tabId).catch(() => null)
   const url = tab?.url
   if (url !== undefined && stored !== null && sameContentLocation(url, stored.context.url)) {
     // Opening the panel is itself a re-check trigger: for a trackless video,
     // and for an imported foreign track still waiting on Bilibili's own ai-zh
     // translation. The sync is deduped and throttled, so this stays cheap.
-    if (stored.context.kind === 'vod' && stored.subtitleSource !== 'asr'
+    if (stored.context.kind === 'vod'
       && ((stored.subtitleSegments?.length ?? 0) === 0
         || trackNeedsChineseTranslation(stored.subtitleSegments ?? []))) {
       void syncBilibiliSubtitle(tabId, stored.context)
@@ -765,7 +786,7 @@ async function reconcileVideoSubtitles(): Promise<void> {
     if (tab.id === undefined) continue
     const state = await readState(tab.id)
     if (state?.context.kind !== 'vod') continue
-    if (state.subtitleSource === 'asr') continue
+    if (state.transcription !== 'inactive') continue
     // A foreign-language track also stays subscribed: Bilibili's own ai-zh
     // translation is generated lazily and must replace the interim import.
     const segments = state.subtitleSegments ?? []
@@ -782,7 +803,7 @@ async function configureSidePanel(): Promise<void> {
 }
 
 void configureSidePanel()
-void restoreAsrSession()
+void restoreAsrSession().then(() => { void recoverOrphanedTranscription() })
 // AI subtitles generate lazily after the player first asks for them; keep
 // reconciling trackless video tabs so they appear without a page refresh.
 setInterval(() => { void reconcileVideoSubtitles() }, 30_000)

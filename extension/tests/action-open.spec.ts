@@ -57,7 +57,7 @@ describe('panel-open bridge recovery', () => {
     const source = await readFile(join(import.meta.dirname, '..', 'src', 'background', 'index.ts'), 'utf8')
     const fastPath = source.slice(source.indexOf('async function readOrResolveState'))
     expect(fastPath).toContain('void syncBilibiliSubtitle(tabId, stored.context)')
-    expect(fastPath).toContain("stored.subtitleSource !== 'asr'")
+    expect(fastPath).toContain('trackNeedsChineseTranslation(stored.subtitleSegments ?? [])')
   })
 
   it('stays subscribed to a foreign track until Bilibili ships its ai-zh translation', async () => {
@@ -100,14 +100,23 @@ describe('panel-open bridge recovery', () => {
     expect(bridge).toContain('playerCidDiffers')
   })
 
-  it('returns transcript ownership when a recognition session ends', async () => {
+  it('retires zombie recognition states at worker startup', async () => {
     const background = await readFile(join(import.meta.dirname, '..', 'src', 'background', 'index.ts'), 'utf8')
-    const deactivate = background.slice(background.indexOf('async function deactivateTranscription'))
-    // A leftover 'asr' source suppressed every later Bilibili import for the
-    // tab; ending the session must strip it.
-    expect(deactivate).toContain("subtitleSource: _source")
-    // States already poisoned by older builds heal on the next panel open.
-    const heal = background.slice(background.indexOf('async function readOrResolveState'))
-    expect(heal).toContain("stored.subtitleSource === 'asr'")
+    // Reloading the extension mid-recording destroys the offscreen document,
+    // leaving tab states stuck 'active' whose 'asr' provenance then blocked
+    // every later subtitle import. The startup sweep retires them; only the
+    // tab owning a re-attached live session survives.
+    const sweep = background.slice(background.indexOf('async function recoverOrphanedTranscription'))
+    expect(sweep).toContain('tabId === asrTabId')
+    expect(sweep).toContain("current.transcription === 'inactive'")
+    expect(sweep).toContain('await deactivateTranscription(tabId, current)')
+    expect(background).toContain('void restoreAsrSession().then(() => { void recoverOrphanedTranscription() })')
+    // Ownership is keyed on the live transcription state; the source field is
+    // provenance for already-imported finals and must not block imports.
+    const pageTracks = background.slice(background.indexOf('async function syncPageSubtitleTracks'))
+    expect(pageTracks).not.toContain("state.subtitleSource === 'asr' || state.transcription")
+    // A proven-empty probe must not erase ASR finals for a trackless video.
+    const sync = background.slice(background.indexOf('async function syncBilibiliSubtitle'))
+    expect(sync).toContain('asrFinals')
   })
 })
