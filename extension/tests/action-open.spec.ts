@@ -155,4 +155,15 @@ describe('panel-open bridge recovery', () => {
       expect(body).toMatch(/\w+\.context\.identity\.bvid === context\.identity\.bvid/)
     }
   })
+
+  it('drops videoData fields while the SPA bvid update is mid-flight', async () => {
+    const bridge = await readFile(join(import.meta.dirname, '..', 'src', 'content', 'page-bridge.ts'), 'utf8')
+    // During navigation Bilibili updates __INITIAL_STATE__.bvid before
+    // videoData; the mixed snapshot bound the previous video's cid/title to
+    // the new bvid and imported the previous video's subtitles under the
+    // new identity (they pass every check — the pair is self-consistent).
+    const snapshot = bridge.slice(bridge.indexOf('function vodSnapshot'))
+    expect(snapshot).toContain('stateSettled')
+    expect(snapshot).toContain('stateBvid === videoDataBvid')
+  })
 })

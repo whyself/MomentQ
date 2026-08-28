@@ -97,22 +97,37 @@ function vodSnapshot(initial: unknown, playInfo: unknown): BilibiliPageSnapshot 
   const requestedPage = firstPositiveInteger(new URL(location.href).searchParams.get('p'))
   const playerCid = firstId(at(playInfo, 'data', 'cid'), at(videoData, 'cid'), at(initial, 'cid'))
   const aid = firstId(at(playInfo, 'data', 'aid'), at(videoData, 'aid'), at(initial, 'aid'))
-  const selectedPage = selectVodPage(pages, requestedPage, playerCid)
+  // Bilibili's SPA updates __INITIAL_STATE__.bvid before videoData during a
+  // navigation. A snapshot mixing the new bvid with the previous video's
+  // cid/title binds foreign subtitles to the new video (every downstream
+  // identity check passes, because the pair is internally self-consistent).
+  // While the two disagree, keep the bvid but drop everything videoData
+  // owns so the background resolves the real identity via the view API.
+  const stateBvid = firstString(at(initial, 'bvid'))
+  const videoDataBvid = firstString(at(videoData, 'bvid'))
+  const stateSettled = stateBvid === undefined || videoDataBvid === undefined || stateBvid === videoDataBvid
+  const settled = (...values: unknown[]): string | number | undefined => stateSettled ? firstId(...values) : undefined
+  const selectedPage = selectVodPage(pages, requestedPage, settled(playerCid) ?? undefined)
   const owner = at(videoData, 'owner')
-  const creatorName = firstString(at(owner, 'name'), at(initial, 'upData', 'name'), metaContent('meta[name="author"]'))
-  const creatorId = firstId(at(owner, 'mid'), at(initial, 'upData', 'mid'))
+  const creatorName = stateSettled
+    ? firstString(at(owner, 'name'), at(initial, 'upData', 'name'), metaContent('meta[name="author"]'))
+    : metaContent('meta[name="author"]')
+  const creatorId = stateSettled ? firstId(at(owner, 'mid'), at(initial, 'upData', 'mid')) : undefined
+  const titleSources = stateSettled
+    ? [at(videoData, 'title'), at(initial, 'h1Title'), metaContent('meta[property="og:title"]'), document.title]
+    : [metaContent('meta[property="og:title"]'), document.title]
 
   return compact({
     url: location.href,
     canonicalUrl: canonicalUrl(),
-    title: firstString(at(videoData, 'title'), at(initial, 'h1Title'), metaContent('meta[property="og:title"]'), document.title),
+    title: firstString(...titleSources),
     creator: creatorName ? compact({ id: creatorId, name: creatorName }) : undefined,
     vod: compact({
-      bvid: firstString(at(initial, 'bvid'), at(videoData, 'bvid')),
+      bvid: stateBvid ?? videoDataBvid,
       aid,
       cid: selectedPage.cid,
       pageNumber: selectedPage.pageNumber,
-      pageCount: pages.length > 0 ? pages.length : firstPositiveInteger(at(videoData, 'videos')),
+      pageCount: stateSettled ? (pages.length > 0 ? pages.length : firstPositiveInteger(at(videoData, 'videos'))) : undefined,
       partTitle: selectedPage.partTitle,
     }),
   }) as BilibiliPageSnapshot
