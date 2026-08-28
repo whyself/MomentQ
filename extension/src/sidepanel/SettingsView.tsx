@@ -298,7 +298,10 @@ function AsrSection({ draft, setDraft, saving, saveError, onSave }: {
         items={[{ id: 'on', label: '开启' }, { id: 'off', label: '关闭' }]}
         onSelect={id => { setDraft({ ...draft, autoConnect: id === 'on' }) }}
       />
-      <Row title="连接状态" description="DSH Host 与百度云凭据分别保存在上方地址与本地 companion。" />
+      <Row
+        title="连接状态"
+        description={`面板版本 v${chrome.runtime.getManifest().version}；DSH Host 与百度云凭据分别保存在上方地址与本地 companion。`}
+      />
       <SaveArea saving={saving || savingCredentials} error={credentialError ?? saveError} onSave={handleSave} />
     </div>
   )

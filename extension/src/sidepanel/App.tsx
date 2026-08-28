@@ -111,7 +111,12 @@ export function App({ subscribe }: {
         // chrome.tabCapture's user-gesture gate is satisfied inside this
         // click handler on an extension surface; the background completes
         // the pipeline with the handed-over stream id.
-        const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: state.tabId }).catch(() => null)
+        let streamId: string | null = null
+        try {
+          streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: state.tabId })
+        } catch {
+          streamId = null
+        }
         if (streamId === null) {
           // Chrome refused the panel-obtained stream id. Falling back lets
           // the background try and, when it is rejected too, record the
