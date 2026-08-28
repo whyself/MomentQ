@@ -27,6 +27,7 @@ if (typeof chrome === 'undefined' || chrome.tabs === undefined) {
   )
 } else {
 let publishToReact: (state: MomentQTabState | null) => void = () => {}
+let latestState: MomentQTabState | null = null
 
 async function queryActiveTabId(): Promise<number | null> {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
@@ -36,7 +37,10 @@ async function queryActiveTabId(): Promise<number | null> {
 const controller = new SidePanelStateController({
   queryActiveTabId,
   sendMessage: message => chrome.runtime.sendMessage(message) as Promise<MomentQTabState | null>,
-  publishState: (state) => { publishToReact(state) },
+  publishState: (state) => {
+    latestState = state
+    publishToReact(state)
+  },
 })
 
 chrome.runtime.onMessage.addListener((message: unknown) => {
@@ -54,9 +58,25 @@ chrome.runtime.onMessage.addListener((message: unknown) => {
   return false
 })
 
+// The first query can land inside the background's resolve throttle window
+// (or before a cold service worker finishes resolving), leaving the panel
+// empty until a page refresh. Re-query while empty instead of giving up.
+let emptyStatePolls = 0
+
 chrome.tabs.onActivated.addListener(({ tabId }) => {
+  emptyStatePolls = 0
   void controller.activateTab(tabId)
 })
+
+window.setInterval(() => {
+  if (latestState !== null) {
+    emptyStatePolls = 0
+    return
+  }
+  if (emptyStatePolls >= 8) return
+  emptyStatePolls += 1
+  void controller.loadActiveTabState()
+}, 2_000)
 
 createRoot(rootElement).render(
   <StrictMode>
