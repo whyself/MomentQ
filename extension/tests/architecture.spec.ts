@@ -60,4 +60,12 @@ describe('standalone extension architecture', () => {
       expect(actual, path).toBe(expected)
     }
   })
+
+  it('reuses the shared subtitle parsers in the MAIN-world page bridge', async () => {
+    const source = await readFile(join(extensionRoot, 'src', 'content', 'page-bridge.ts'), 'utf8')
+    // The parsers must exist once; the bridge imports them instead of keeping
+    // a second drifting copy inside its isolation closure.
+    expect(source).toContain("from '../shared/bilibili-subtitle'")
+    expect(source).not.toMatch(/\bfunction\s+(?:parseSubtitleIndex|subtitleTracks|normalizeSubtitleBody)\b/)
+  })
 })

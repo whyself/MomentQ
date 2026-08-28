@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isPageMessageEnvelope, isPageSubtitleMessageEnvelope, isPageSubtitleTracksMessageEnvelope } from '../src/shared/protocol'
+import { isPageMessageEnvelope, isPageSubtitleTracksMessageEnvelope } from '../src/shared/protocol'
 
 const validEnvelope = {
   source: 'momentq-page',
@@ -39,23 +39,6 @@ describe('isPageMessageEnvelope', () => {
     { ...validEnvelope, payload: Object.assign(Object.create({ title: 'inherited' }), { url: validEnvelope.payload.url }) },
   ])('rejects malformed input: %o', value => {
     expect(isPageMessageEnvelope(value)).toBe(false)
-  })
-})
-
-describe('isPageSubtitleMessageEnvelope', () => {
-  it('accepts normalized subtitle segments', () => {
-    expect(isPageSubtitleMessageEnvelope({
-      source: 'momentq-page', version: 1, type: 'PAGE_SUBTITLE',
-      payload: { bvid: 'BV1xx411c7mD', cid: '123', segments: [{ start: 0, end: 1.2, text: '你好' }] },
-    })).toBe(true)
-  })
-
-  it.each([
-    { source: 'momentq-page', version: 1, type: 'PAGE_SUBTITLE', payload: { bvid: 'BV', cid: '1', segments: [] } },
-    { source: 'momentq-page', version: 1, type: 'PAGE_SUBTITLE', payload: { bvid: 'BV', cid: '1', segments: [{ start: -1, end: 1, text: 'x' }] } },
-    { source: 'momentq-page', version: 1, type: 'PAGE_SUBTITLE', payload: { bvid: 'BV', cid: '1', segments: [{ start: 2, end: 1, text: 'x' }] } },
-  ])('rejects malformed subtitle payload: %o', value => {
-    expect(isPageSubtitleMessageEnvelope(value)).toBe(false)
   })
 })
 

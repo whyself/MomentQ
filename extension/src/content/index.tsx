@@ -1,5 +1,5 @@
 import type { MomentQTabState, TabStateChangedMessage } from '../shared/protocol'
-import { isPageMessageEnvelope, isPageSubtitleMessageEnvelope, isPageSubtitleTracksMessageEnvelope } from '../shared/protocol'
+import { isPageMessageEnvelope, isPageSubtitleTracksMessageEnvelope } from '../shared/protocol'
 import { pageSnapshotToRuntimeMessage } from './relay'
 import { mountTranscriptionControl } from './transcription-control'
 
@@ -43,9 +43,9 @@ window.addEventListener('keydown', (event) => {
 
 window.addEventListener('message', (event: MessageEvent<unknown>) => {
   if (event.source !== window || event.origin !== location.origin
-    || (!isPageMessageEnvelope(event.data) && !isPageSubtitleMessageEnvelope(event.data) && !isPageSubtitleTracksMessageEnvelope(event.data))) return
+    || (!isPageMessageEnvelope(event.data) && !isPageSubtitleTracksMessageEnvelope(event.data))) return
 
-  if (isPageSubtitleMessageEnvelope(event.data) || isPageSubtitleTracksMessageEnvelope(event.data)) {
+  if (isPageSubtitleTracksMessageEnvelope(event.data)) {
     void chrome.runtime.sendMessage(event.data).catch(() => {})
     return
   }

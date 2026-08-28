@@ -16,7 +16,6 @@ export default defineConfig({
       input: {
         sidepanel: resolve(import.meta.dirname, 'sidepanel.html'),
         background: resolve(import.meta.dirname, 'src/background/index.ts'),
-        'page-bridge': resolve(import.meta.dirname, 'src/content/page-bridge.ts'),
       },
       output: {
         entryFileNames: 'assets/[name].js',

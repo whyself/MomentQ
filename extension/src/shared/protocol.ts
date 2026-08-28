@@ -62,17 +62,9 @@ export type BilibiliSubtitleSegment = {
   end: number
   text: string
 }
-
-export type PageSubtitleMessageEnvelope = {
-  source: 'momentq-page'
-  version: 1
-  type: 'PAGE_SUBTITLE'
-  payload: {
-    bvid: string
-    cid: string
-    segments: BilibiliSubtitleSegment[]
-  }
-}
+// Structural match of the Host's TranscriptSegment: both Bilibili subtitle
+// imports (source "bilibili") and future ASR output (source "asr") persist the
+// same { start, end, text } rows through MomentQClient.syncTranscript.
 
 export type PageSubtitleTracksMessageEnvelope = {
   source: 'momentq-page'
@@ -221,14 +213,6 @@ export function isPageMessageEnvelope(value: unknown): value is PageMessageEnvel
     && Object.hasOwn(value, 'payload') && isBilibiliPageSnapshot(value.payload)
 }
 
-function isSubtitleSegment(value: unknown): value is BilibiliSubtitleSegment {
-  return isPlainRecord(value)
-    && hasOnlyKeys(value, ['start', 'end', 'text'])
-    && typeof value.start === 'number' && Number.isFinite(value.start) && value.start >= 0
-    && typeof value.end === 'number' && Number.isFinite(value.end) && value.end >= value.start
-    && typeof value.text === 'string' && value.text.trim() !== ''
-}
-
 export function isPageSubtitleTracksMessageEnvelope(value: unknown): value is PageSubtitleTracksMessageEnvelope {
   return isPlainRecord(value)
     && hasOnlyKeys(value, ['source', 'version', 'type', 'payload'])
@@ -242,20 +226,6 @@ export function isPageSubtitleTracksMessageEnvelope(value: unknown): value is Pa
     && ((value.payload.status === 'available' && value.payload.tracks.length > 0)
       || (value.payload.status === 'absent' && value.payload.tracks.length === 0))
     && value.payload.tracks.every(track => typeof track === 'string' && track.startsWith('https://'))
-}
-
-export function isPageSubtitleMessageEnvelope(value: unknown): value is PageSubtitleMessageEnvelope {
-  if (!isPlainRecord(value)
-    || !hasOnlyKeys(value, ['source', 'version', 'type', 'payload'])
-    || value.source !== 'momentq-page' || value.version !== 1 || value.type !== 'PAGE_SUBTITLE'
-    || !isPlainRecord(value.payload)
-    || !hasOnlyKeys(value.payload, ['bvid', 'cid', 'segments'])
-    || typeof value.payload.bvid !== 'string' || value.payload.bvid.trim() === ''
-    || typeof value.payload.cid !== 'string' || value.payload.cid.trim() === ''
-    || !Array.isArray(value.payload.segments)
-    || value.payload.segments.length === 0
-    || value.payload.segments.some(segment => !isSubtitleSegment(segment))) return false
-  return true
 }
 
 export function isPageSubtitlePositionMessageEnvelope(value: unknown): value is PageSubtitlePositionMessageEnvelope {

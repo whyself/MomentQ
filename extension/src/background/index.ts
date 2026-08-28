@@ -15,17 +15,16 @@ import type {
   CaptureCurrentFrameMessage,
   GetCurrentVideoTimeMessage,
   ResolvePageSnapshotMessage,
-  PageSubtitleMessageEnvelope,
   PageSubtitleTracksMessageEnvelope,
   PageSubtitlePositionMessageEnvelope,
   BilibiliSubtitleSegment,
 } from '../shared/protocol'
-import { isBilibiliPageSnapshot, isPageSubtitleMessageEnvelope, isPageSubtitlePositionMessageEnvelope, isPageSubtitleTracksMessageEnvelope } from '../shared/protocol'
+import { isBilibiliPageSnapshot, isPageSubtitlePositionMessageEnvelope, isPageSubtitleTracksMessageEnvelope } from '../shared/protocol'
 import { fetchBilibiliSubtitle, fetchSubtitleTrackUrl } from './bilibili-subtitle'
 import { MomentQClient } from '../shared/host-client'
 import { loadSettings } from '../shared/settings-store'
 
-type WorkerRequest = PageContextRuntimeMessage | ResolvePageSnapshotMessage | GetTabStateMessage | ToggleTranscriptionMessage | ToggleCurrentTranscriptionMessage | CaptureCurrentFrameMessage | GetCurrentVideoTimeMessage | PageSubtitleMessageEnvelope | PageSubtitleTracksMessageEnvelope | PageSubtitlePositionMessageEnvelope
+type WorkerRequest = PageContextRuntimeMessage | ResolvePageSnapshotMessage | GetTabStateMessage | ToggleTranscriptionMessage | ToggleCurrentTranscriptionMessage | CaptureCurrentFrameMessage | GetCurrentVideoTimeMessage | PageSubtitleTracksMessageEnvelope | PageSubtitlePositionMessageEnvelope
 
 const storageKey = (tabId: number) => `tab:${tabId}`
 const tabOperations = new TabOperationQueue()
@@ -45,7 +44,6 @@ function requestType(value: unknown): WorkerRequest['type'] | null {
     || value.type === 'MOMENTQ_TOGGLE_CURRENT_TRANSCRIPTION'
     || value.type === 'MOMENTQ_CAPTURE_CURRENT_FRAME') return value.type
   if (value.type === 'MOMENTQ_GET_CURRENT_VIDEO_TIME') return value.type
-  if (value.type === 'PAGE_SUBTITLE' && isPageSubtitleMessageEnvelope(value)) return value.type
   if (value.type === 'PAGE_SUBTITLE_TRACKS' && isPageSubtitleTracksMessageEnvelope(value)) return value.type
   if (value.type === 'PAGE_SUBTITLE_POSITION' && isPageSubtitlePositionMessageEnvelope(value)) return value.type
   return null
@@ -128,14 +126,6 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
   } finally {
     if (subtitleSyncs.get(key) === current) subtitleSyncs.delete(key)
   }
-}
-
-async function syncPageSubtitle(tabId: number, message: PageSubtitleMessageEnvelope): Promise<void> {
-  // Rendered DOM/pixel captions are not authoritative and can be stale or
-  // belong to a preloaded adjacent episode. Complete timed tracks are
-  // imported only through PAGE_SUBTITLE_TRACKS below.
-  void tabId
-  void message
 }
 
 async function syncPageSubtitleTracks(tabId: number, message: PageSubtitleTracksMessageEnvelope): Promise<void> {
@@ -251,13 +241,6 @@ async function handleRequest(
 ): Promise<MomentQTabState | string | number | null> {
   const type = requestType(message)
   if (!type || !isRecord(message)) return null
-
-  if (type === 'PAGE_SUBTITLE') {
-    const tabId = sender.tab?.id
-    if (tabId === undefined || !isPageSubtitleMessageEnvelope(message)) return null
-    await syncPageSubtitle(tabId, message)
-    return await readState(tabId)
-  }
 
   if (type === 'PAGE_SUBTITLE_TRACKS') {
     const tabId = sender.tab?.id
