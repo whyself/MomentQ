@@ -27,7 +27,7 @@ describe('DSH UI reuse contract', () => {
     expect(view).toContain('inputCss.backdrop')
     expect(view).toContain('inputCss.add')
     expect(view).toContain('IconPlusOutline16 size={14}')
-    expect(view).toContain('part !== undefined')
+    expect(view).toContain('partText !== undefined')
     expect(view).toContain('MarkdownText')
     expect(view).toContain('streaming={streaming}')
     expect(view).not.toContain("split(/\\n{2,}/)")

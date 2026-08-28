@@ -21,6 +21,21 @@ function maskSecret(value: string | undefined): string | null {
   return `${value.slice(0, 2)}****${value.slice(-2)}`
 }
 
+/** Extension pages fetch these endpoints cross-origin; allow them explicitly. */
+function corsHeaders(req: import('node:http').IncomingMessage): Record<string, string> {
+  const origin = req.headers.origin
+  if (origin === undefined) return {}
+  let allowed = false
+  try {
+    const parsed = new URL(origin)
+    allowed = parsed.protocol === 'chrome-extension:' || parsed.protocol === 'moz-extension:'
+      || (parsed.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(parsed.hostname))
+  } catch {
+    allowed = false
+  }
+  return allowed ? { 'access-control-allow-origin': origin, vary: 'Origin' } : {}
+}
+
 function credentialInput(value: unknown): { appId: string; apiKey: string; secretKey: string; devPid?: number } | null {
   if (typeof value !== 'object' || value === null) return null
   const record = value as { appId?: unknown; apiKey?: unknown; secretKey?: unknown; devPid?: unknown }
@@ -67,16 +82,32 @@ export async function startCompanionServer(
   }
   const server = createServer(async (request, response) => {
     const path = request.url?.split('?')[0] ?? '/'
+    const cors = corsHeaders(request)
     const sendJson = (status: number, body: unknown): void => {
       const content = JSON.stringify(body)
-      response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(content) })
+      response.writeHead(status, {
+        'content-type': 'application/json; charset=utf-8',
+        'content-length': Buffer.byteLength(content),
+        ...cors,
+      })
       response.end(content)
+    }
+    if (request.method === 'OPTIONS' && (path === '/health' || path === '/config')) {
+      response.writeHead(204, {
+        ...cors,
+        'access-control-allow-methods': 'GET, POST, OPTIONS',
+        'access-control-allow-headers': 'content-type',
+        'access-control-max-age': '600',
+      })
+      response.end()
+      return
     }
     if (request.method === 'GET' && (path === '/health' || path === '/health/')) {
       sendJson(200, {
         ok: true,
         provider: config.provider,
         configured: baiduConfigured(config.baidu),
+        configApi: true,
       })
       return
     }
@@ -129,7 +160,7 @@ export async function startCompanionServer(
       sendJson(405, { ok: false, error: { code: 'invalid-request', message: 'GET or POST required' } })
       return
     }
-    response.writeHead(404).end()
+    sendJson(404, { ok: false, error: { code: 'not-found', message: 'unknown MomentQ companion endpoint' } })
   })
   const webSocketServer = new WebSocketServer({ server, maxPayload: MAX_FRAME_BYTES })
 

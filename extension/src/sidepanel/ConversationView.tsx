@@ -19,19 +19,26 @@ function ContextHeader({ state, settings, transcriptionToggle }: {
 }) {
   const metadata = state?.context.metadata
   const part = state?.context.kind === 'vod' ? state.context.metadata.part : undefined
+  const partText = part === undefined ? undefined : `第 ${part.number} 集${part.title === undefined ? '' : ` · ${part.title}`}`
   return (
     <header className={conversationCss.header}>
       <div className={conversationCss.titleRow}>
         <div className={conversationCss.titleCluster}>
           <div className={conversationCss.crumbs}>
-            <span className={`${conversationCss.crumb} ${conversationCss.crumbCurrent}`}>
+            <span
+              className={`${conversationCss.crumb} ${conversationCss.crumbCurrent} momentq-title-crumb`}
+              title={metadata?.title ?? 'MomentQ'}
+            >
               {metadata?.title ?? 'MomentQ'}
             </span>
-            {part !== undefined && (
+            {partText !== undefined && (
               <span className={conversationCss.crumbSeg}>
                 <span className={conversationCss.crumbSep}>/</span>
-                <span className={`${conversationCss.crumb} ${conversationCss.crumbCurrent}`}>
-                  第 {part.number} 集{part.title === undefined ? '' : ` · ${part.title}`}
+                <span
+                  className={`${conversationCss.crumb} ${conversationCss.crumbCurrent} momentq-part-crumb`}
+                  title={partText}
+                >
+                  {partText}
                 </span>
               </span>
             )}
@@ -99,10 +106,7 @@ function SubtitleTicker({ state, playbackTime }: { state: MomentQTabState | null
   if (window === null && (preview === undefined || preview === '')) return null
   const index = window?.index ?? -1
   const start = window?.start ?? 0
-  // Keep one extra row above the fade window so it can finish its upward
-  // motion before the clipped viewport removes it.
-  const animatedStart = Math.max(0, start - 1)
-  const animatedVisible = window === null ? [] : segments.slice(animatedStart, index + 1)
+  const visible = window === null ? [] : segments.slice(start, index + 1)
   // An in-flight ASR sentence is the live line; committed rows shift one slot
   // further into the fade history while it is on screen.
   const previewOffset = preview !== undefined && preview !== '' ? 1 : 0
@@ -113,24 +117,21 @@ function SubtitleTicker({ state, playbackTime }: { state: MomentQTabState | null
       aria-live="polite"
     >
       <div className="momentq-subtitle-track">
-        {animatedVisible.map((segment, visibleIndex) => {
-          const segmentIndex = animatedStart + visibleIndex
+        {visible.map((segment, visibleIndex) => {
+          const segmentIndex = start + visibleIndex
           const distance = index - segmentIndex + previewOffset
           const active = previewOffset === 0 && distance === 0
           return <div
             key={`${segment.start}-${segment.end}-${segment.text}`}
             className={`momentq-subtitle-line${active ? ' is-current' : ''}`}
-            style={{
-              opacity: active ? 1 : distance <= historyRows ? Math.max(0.2, 0.78 - distance * 0.14) : 0,
-              transform: `translateY(${-distance * 24}px)`,
-            }}
+            style={{ opacity: active ? 1 : distance <= historyRows ? Math.max(0.2, 0.78 - distance * 0.14) : 0 }}
           >{segment.text}</div>
         })}
         {previewOffset === 1 && (
           <div
             className="momentq-subtitle-line is-current"
             data-transcript-preview
-            style={{ opacity: 1, transform: 'translateY(0px)' }}
+            style={{ opacity: 1 }}
           >{preview}</div>
         )}
       </div>

@@ -168,7 +168,7 @@ function AsrSection({ draft, setDraft, saving, saveError, onSave }: {
   onSave: () => void
 }) {
   const [credentialView, setCredentialView] = useState<CompanionConfigView | null>(null)
-  const [credentialUnreachable, setCredentialUnreachable] = useState(false)
+  const [credentialErrorText, setCredentialErrorText] = useState<string | null>(null)
   const [appId, setAppId] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [secretKey, setSecretKey] = useState('')
@@ -177,25 +177,33 @@ function AsrSection({ draft, setDraft, saving, saveError, onSave }: {
 
   useEffect(() => {
     let active = true
-    setCredentialUnreachable(false)
+    setCredentialErrorText(null)
     fetchCompanionConfig(draft.companionBaseUrl).then(view => {
       if (!active) return
       setCredentialView(view)
       setAppId(current => current === '' ? view.baidu.appId ?? '' : current)
-    }).catch(() => {
-      if (active) {
-        setCredentialView(null)
-        setCredentialUnreachable(true)
-      }
+    }).catch((error: unknown) => {
+      if (!active) return
+      setCredentialView(null)
+      setCredentialErrorText(error instanceof Error ? error.message : '无法读取本地 companion 配置')
     })
     return () => { active = false }
   }, [draft.companionBaseUrl])
 
+  // Saved secrets display as password dots; the dots are never submitted —
+  // only text the user actually types this session counts as input.
+  const apiKeyDisplay = apiKey !== '' ? apiKey : credentialView?.baidu.configured === true ? '••••••••' : ''
+  const secretKeyDisplay = secretKey !== '' ? secretKey : credentialView?.baidu.secretKeySet === true ? '••••••••' : ''
+  const selectAllOnFocus = (event: import('react').FocusEvent<HTMLInputElement>): void => {
+    event.currentTarget.select()
+  }
+
   const handleSave = (): void => {
     void (async () => {
       setCredentialError(null)
-      const typed = appId.trim() !== '' || apiKey !== '' || secretKey !== ''
-      if (typed && (appId.trim() === '' || apiKey === '' || secretKey === '')) {
+      const typed = apiKey !== '' || secretKey !== '' || (appId !== '' && appId !== (credentialView?.baidu.appId ?? ''))
+      const typedAll = appId.trim() !== '' && apiKey !== '' && secretKey !== ''
+      if (typed && !typedAll) {
         setCredentialError('App ID、API Key、Secret Key 需要同时填写')
         return
       }
@@ -223,15 +231,13 @@ function AsrSection({ draft, setDraft, saving, saveError, onSave }: {
   }
 
   const baidu = credentialView?.baidu
-  const configuredText = credentialUnreachable
-    ? '无法连接本地 companion'
-    : baidu === undefined
-      ? '读取中…'
-      : baidu.configured ? '已配置' : '未配置'
+  const configuredText = credentialErrorText ?? (baidu === undefined
+    ? '读取中…'
+    : baidu.configured ? '已配置' : '未配置')
 
   return (
     <div>
-      <Row title="伴随服务地址" description="音频捕获与语音识别都在本地 companion 内完成，密钥不进入扩展。">
+      <Row title="伴随服务地址" description={`配置状态：${configuredText}${baidu?.apiKeyMasked === null || baidu?.apiKeyMasked === undefined ? '' : `，API Key ${baidu.apiKeyMasked}`}`}>
         <Input value={draft.companionBaseUrl} onChange={event => { setDraft({ ...draft, companionBaseUrl: event.target.value }) }} />
       </Row>
       <SelectRow
@@ -241,34 +247,38 @@ function AsrSection({ draft, setDraft, saving, saveError, onSave }: {
         items={ASR_PROVIDERS.map(({ id, label }) => ({ id, label }))}
         onSelect={id => { setDraft({ ...draft, asrProvider: id as AsrProviderId }) }}
       />
-      <Row title="百度云 App ID" description={`配置状态：${configuredText}${baidu?.apiKeyMasked === null ? '' : `，API Key ${baidu?.apiKeyMasked ?? ''}`}`}>
+      <Row title="百度云 App ID" description="与 API Key、Secret Key 一起填写后保存到本机 companion。">
         <Input
           value={appId}
           name="baiduAppId"
           autoComplete="off"
           aria-label="百度云 App ID"
-          placeholder={baidu?.appId ?? '输入百度云 App ID'}
+          placeholder="输入百度云 App ID"
           onChange={event => { setAppId(event.target.value) }}
         />
       </Row>
-      <Row title="百度云 API Key" description="只保存在本机 companion；修改时与 Secret Key 一起重新填写。">
+      <Row title="百度云 API Key" description="只保存在本机 companion；已保存时显示圆点，修改请重新输入。">
         <Input
           type="password"
           name="baiduApiKey"
           autoComplete="off"
           aria-label="百度云 API Key"
-          placeholder={baidu?.apiKeyMasked ?? '输入百度云 API Key'}
-          onChange={event => { setApiKey(event.target.value) }}
+          placeholder="输入百度云 API Key"
+          value={apiKeyDisplay}
+          onFocus={selectAllOnFocus}
+          onChange={event => { setApiKey(event.target.value.replaceAll('•', '')) }}
         />
       </Row>
-      <Row title="百度云 Secret Key" description={baidu?.secretKeySet === true ? '已保存。' : '尚未保存。'}>
+      <Row title="百度云 Secret Key" description="只保存在本机 companion；已保存时显示圆点，修改请重新输入。">
         <Input
           type="password"
           name="baiduSecretKey"
           autoComplete="off"
           aria-label="百度云 Secret Key"
-          placeholder={baidu?.secretKeySet === true ? '已保存' : '输入百度云 Secret Key'}
-          onChange={event => { setSecretKey(event.target.value) }}
+          placeholder="输入百度云 Secret Key"
+          value={secretKeyDisplay}
+          onFocus={selectAllOnFocus}
+          onChange={event => { setSecretKey(event.target.value.replaceAll('•', '')) }}
         />
       </Row>
       <SelectRow

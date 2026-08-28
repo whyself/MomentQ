@@ -124,7 +124,7 @@ describe('companion ASR server', () => {
     const harness = await startHarness()
     try {
       const response = await fetch(`http://127.0.0.1:${harness.port}/health`)
-      expect(await response.json()).toEqual({ ok: true, provider: 'baidu', configured: true })
+      expect(await response.json()).toMatchObject({ ok: true, provider: 'baidu', configured: true, configApi: true })
     } finally {
       await harness.close()
     }
@@ -195,7 +195,7 @@ describe('companion ASR server', () => {
     try {
       const base = `http://127.0.0.1:${harness.port}`
       await expect((await fetch(`${base}/health`)).json()).resolves.toEqual({
-        ok: true, provider: 'baidu', configured: false,
+        ok: true, provider: 'baidu', configured: false, configApi: true,
       })
 
       const saved = await fetch(`${base}/config`, {
@@ -207,7 +207,7 @@ describe('companion ASR server', () => {
       expect(await saved.json()).toEqual({ ok: true, value: { saved: true } })
 
       await expect((await fetch(`${base}/health`)).json()).resolves.toEqual({
-        ok: true, provider: 'baidu', configured: true,
+        ok: true, provider: 'baidu', configured: true, configApi: true,
       })
       await expect((await fetch(`${base}/config`)).json()).resolves.toEqual({
         provider: 'baidu',

@@ -1,20 +1,29 @@
+/* Subtitle ticker above the composer: history rows fade upward, the current
+ * row is emphasized. Rows wrap instead of truncating — ASR sentences can be
+ * long and must stay fully readable. Colors/motion tokens come from DSH. */
+
+.momentq-subtitle-ticker {
+  padding: 0 12px;
+}
+
+.momentq-subtitle-track {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
 .momentq-subtitle-line {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  height: 24px;
-  line-height: 24px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   text-align: center;
+  line-height: 22px;
   color: var(--dsw-alias-label-secondary);
   font-size: 15px;
   font-weight: 400;
   letter-spacing: 0;
-  transition: opacity 220ms ease-out, transform 220ms ease-out;
-  will-change: opacity, transform;
+  transition: opacity 220ms ease-out;
+  will-change: opacity;
 }
 
 .momentq-subtitle-line.is-current {
@@ -26,16 +35,10 @@
 @keyframes momentq-subtitle-current-in {
   from {
     opacity: 0;
-    transform: translateY(24px);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
   }
-}
-
-.momentq-subtitle-track {
-  position: relative;
 }
 
 @media (prefers-reduced-motion: reduce) {

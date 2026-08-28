@@ -34,18 +34,22 @@ function companionOrigin(baseUrl: string): string {
 }
 
 async function companionCall<T>(baseUrl: string, init: RequestInit, fetcher: typeof fetch): Promise<T> {
-  const response = await fetcher(`${companionOrigin(baseUrl)}/config`, {
-    ...init,
-    headers: { 'content-type': 'application/json' },
-  })
+  let response: Response
+  try {
+    // GET keeps no content-type header: it would force a CORS preflight for
+    // no benefit, and older companions without OPTIONS support would fail.
+    response = await fetcher(`${companionOrigin(baseUrl)}/config`, init)
+  } catch {
+    throw new CompanionClientError(0, '无法连接本地 companion：请先运行 node companion/dist/index.js')
+  }
   let envelope: unknown
   try {
     envelope = await response.json()
   } catch {
-    throw new CompanionClientError(response.status, 'companion 返回了无效响应')
+    throw new CompanionClientError(response.status, 'companion 响应异常（可能正在运行旧版本，请重启最新构建的 companion）')
   }
   if (typeof envelope !== 'object' || envelope === null) {
-    throw new CompanionClientError(response.status, 'companion 返回了无效响应')
+    throw new CompanionClientError(response.status, 'companion 响应异常（可能正在运行旧版本，请重启最新构建的 companion）')
   }
   const record = envelope as { ok?: unknown; value?: unknown; error?: { message?: unknown } }
   if (record.ok !== true || !('value' in record)) {
