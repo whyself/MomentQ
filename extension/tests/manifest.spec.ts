@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 interface Manifest {
   manifest_version: number
+  permissions: string[]
   host_permissions: string[]
   background: { service_worker: string; type: string }
   side_panel: { default_path: string }
@@ -19,6 +20,7 @@ describe('extension manifest', () => {
     expect(manifest.manifest_version).toBe(3)
     expect(manifest.background).toEqual({ service_worker: 'assets/background.js', type: 'module' })
     expect(manifest.side_panel.default_path).toBe('sidepanel.html')
+    expect(manifest.permissions).toEqual(expect.arrayContaining(['tabCapture', 'offscreen']))
     expect(manifest.host_permissions).toContain('https://api.bilibili.com/*')
     expect(manifest.host_permissions).toContain('https://*.hdslb.com/*')
     expect(manifest.commands['open-side-panel']?.suggested_key?.default).toBe('Alt+Q')
@@ -33,5 +35,13 @@ describe('extension manifest', () => {
         'https://live.bilibili.com/*',
       ])
     }
+  })
+
+  it('ships the offscreen capture entry points', async () => {
+    const publicDir = join(import.meta.dirname, '..', 'public')
+    const offscreen = await readFile(join(publicDir, 'offscreen.html'), 'utf8')
+    expect(offscreen).toContain('assets/offscreen.js')
+    const worklet = await readFile(join(publicDir, 'capture-worklet.js'), 'utf8')
+    expect(worklet).toContain("registerProcessor('momentq-capture'")
   })
 })

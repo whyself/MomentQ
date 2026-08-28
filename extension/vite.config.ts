@@ -16,6 +16,7 @@ export default defineConfig({
       input: {
         sidepanel: resolve(import.meta.dirname, 'sidepanel.html'),
         background: resolve(import.meta.dirname, 'src/background/index.ts'),
+        offscreen: resolve(import.meta.dirname, 'src/offscreen/index.ts'),
       },
       output: {
         entryFileNames: 'assets/[name].js',

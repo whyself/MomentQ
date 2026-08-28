@@ -64,9 +64,28 @@ BV 号，再由后台调用 B 站公开 `x/web-interface/view` 接口读取并�
 凭据服务仍不提供明文回读，因此升级前已经只存在于 Host 的密钥需要重新输入
 一次。扩展不会接收或保存任何 ASR 服务商的 API Key、Secret Key、Access
 Token 或密码：语音识别 Provider（云端或本地模型）在本地 `companion/`
-内以可插拔接口实现，扩展只传递 companion 地址与 provider 选择。音频捕获/转码、
-流式 ASR 和 Native Messaging 尚未实现；因此当前播放/暂停按钮只切换扩展状态，
-不代表真实 ASR 已开始工作。
+内以可插拔接口实现，扩展只传递 companion 地址与 provider 选择。
+
+## 实时语音识别（百度 ASR）
+
+字幕无法取得时（视频无 AI/原生轨道，或直播间），可以开启流式语音识别：
+
+1. 运行本地 companion 并配置百度密钥（见 `companion/README.md`）。
+2. 打开无字幕的 B 站视频，点击侧边栏标题栏的转录按钮（或页面侧悬浮球）。
+3. 扩展在 offscreen 文档中用 `chrome.tabCapture` 抓取当前标签页音频，
+   降采样为 `16kHz / 16bit / mono PCM`，静音段（暂停、静音）直接丢弃，经
+   本机回环 WebSocket 发给 companion；companion 转发百度实时识别，用扩展
+   发来的媒体时钟把每句锚定到媒体时间轴，最终句子经 Host
+   `syncTranscript(identity, 'asr', …)` 写入与字幕同构的 `transcript.jsonl`。
+4. 侧边栏输入框上方的字幕滚动流实时显示：识别中的句子（临时结果）为当前
+   行，已确定的句子进入上移淡出的历史；拖动进度会被检测为 seek，丢弃进行
+   中的句子并不重复转写已覆盖区间。
+
+从侧边栏按钮启动是可靠路径（tabCapture 需要扩展面板上的用户手势）；页面
+悬浮球路径在部分浏览器版本可能因手势限制失败，失败原因会显示在侧栏错误
+行。拖动进度或暂停期间不产生转写内容；识别已在进行时再次点击为暂停/继续。
+ASR 凭据只存在于 companion 进程；原始音频仅经本机回环传输，不落盘、不出
+本机。Native Messaging 路径仍未使用。
 
 ## 原版页面参考
 

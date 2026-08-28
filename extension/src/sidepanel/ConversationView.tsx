@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { Button, FishLogo, IconCloseOutline16, IconPlusOutline16, IconSendOutline16, MarkdownText } from '../dsh/primitives'
+import { IconPauseOutline16, IconPlayOutline16 } from '../vendor/deepseek-harness/packages/client/ui-primitives/src/icons/index.tsx'
 import type { ConversationHistoryEntry, MessageStreamEvent, SubmitMessageResult } from '../shared/host-client'
 import type { MomentQTabState } from '../shared/protocol'
 import assistantCss from '../vendor/deepseek-harness/packages/client/ui-conversation/src/client/chat/AssistantMarkdown.module.css'
@@ -10,7 +11,11 @@ import heroCss from '../vendor/deepseek-harness/packages/client/ui-conversation/
 import inputCss from '../vendor/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/InputBar.module.css'
 import { selectSubtitleWindow } from './subtitle-window'
 
-function ContextHeader({ state, settings }: { state: MomentQTabState | null; settings: ReactNode }) {
+function ContextHeader({ state, settings, transcriptionToggle }: {
+  state: MomentQTabState | null
+  settings: ReactNode
+  transcriptionToggle: ReactNode
+}) {
   const metadata = state?.context.metadata
   const part = state?.context.kind === 'vod' ? state.context.metadata.part : undefined
   return (
@@ -31,12 +36,41 @@ function ContextHeader({ state, settings }: { state: MomentQTabState | null; set
             )}
           </div>
         </div>
-        <div className={conversationCss.headerActions}>{settings}</div>
+        <div className={conversationCss.headerActions}>
+          {transcriptionToggle}
+          {settings}
+        </div>
       </div>
       <div className={conversationCss.tabs}>
         <button type="button" className={`${conversationCss.tab} ${conversationCss.tabActive}`}>对话</button>
       </div>
     </header>
+  )
+}
+
+/**
+ * Side-panel transcription control. Starting capture from here is the
+ * reliable path: the click handler runs on an extension surface, so the
+ * tabCapture user-gesture gate is satisfied before the request is relayed.
+ */
+function TranscriptionToggle({ state, onToggle }: { state: MomentQTabState | null; onToggle: () => void }) {
+  if (state === null) return null
+  const blockedBySubtitles = state.subtitleSource !== 'asr'
+    && (state.subtitleSegments?.length ?? 0) > 0
+  if (blockedBySubtitles) return null
+  const active = state.transcription === 'active'
+  const label = state.transcription === 'inactive'
+    ? '开始转录'
+    : active ? '暂停转录' : '继续转录'
+  return (
+    <Button
+      variant="toolbar"
+      size="sm"
+      aria-label={label}
+      title={state.transcriptionError !== undefined ? `${label}（${state.transcriptionError}）` : label}
+      icon={active ? <IconPauseOutline16 size={16} /> : <IconPlayOutline16 size={16} />}
+      onClick={onToggle}
+    />
   )
 }
 
@@ -49,16 +83,21 @@ function SubtitleTicker({ state, playbackTime }: { state: MomentQTabState | null
   // is briefly undefined; falling back to zero made the ticker show the first
   // caption and then jump back to the real playback position.
   const historyRows = 4
+  const preview = state?.transcriptPreview?.trim()
   const window = selectSubtitleWindow(segments, playbackTime, historyRows)
   // Render only the visible window. Keeping hundreds of transparent rows in
   // the DOM made each 250 ms state update recalculate a large scrollHeight;
   // that is visually indistinguishable from subtitles jumping up and down.
-  if (window === null) return null
-  const { index, start } = window
+  if (window === null && (preview === undefined || preview === '')) return null
+  const index = window?.index ?? -1
+  const start = window?.start ?? 0
   // Keep one extra row above the fade window so it can finish its upward
   // motion before the clipped viewport removes it.
   const animatedStart = Math.max(0, start - 1)
-  const animatedVisible = segments.slice(animatedStart, index + 1)
+  const animatedVisible = window === null ? [] : segments.slice(animatedStart, index + 1)
+  // An in-flight ASR sentence is the live line; committed rows shift one slot
+  // further into the fade history while it is on screen.
+  const previewOffset = preview !== undefined && preview !== '' ? 1 : 0
   return (
     <div
       className="momentq-subtitle-ticker"
@@ -68,8 +107,8 @@ function SubtitleTicker({ state, playbackTime }: { state: MomentQTabState | null
       <div className="momentq-subtitle-track">
         {animatedVisible.map((segment, visibleIndex) => {
           const segmentIndex = animatedStart + visibleIndex
-          const distance = index - segmentIndex
-          const active = distance === 0
+          const distance = index - segmentIndex + previewOffset
+          const active = previewOffset === 0 && distance === 0
           return <div
             key={`${segment.start}-${segment.end}-${segment.text}`}
             className={`momentq-subtitle-line${active ? ' is-current' : ''}`}
@@ -79,6 +118,13 @@ function SubtitleTicker({ state, playbackTime }: { state: MomentQTabState | null
             }}
           >{segment.text}</div>
         })}
+        {previewOffset === 1 && (
+          <div
+            className="momentq-subtitle-line is-current"
+            data-transcript-preview
+            style={{ opacity: 1, transform: 'translateY(0px)' }}
+          >{preview}</div>
+        )}
       </div>
     </div>
   )
@@ -243,7 +289,7 @@ function ConversationTranscript({ entries, pending, error }: {
   )
 }
 
-export function ConversationView({ state, capturedFrame, playbackTime, settings, onCaptureFrame, onLoadHistory, onSubmit }: {
+export function ConversationView({ state, capturedFrame, playbackTime, settings, onCaptureFrame, onLoadHistory, onSubmit, onToggleTranscription }: {
   state: MomentQTabState | null
   capturedFrame?: string | null
   playbackTime: number | undefined
@@ -255,6 +301,7 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
     onEvent: (event: MessageStreamEvent) => void,
     signal: AbortSignal,
   ) => Promise<SubmitMessageResult>
+  onToggleTranscription?: () => void
 }) {
   const [draft, setDraft] = useState('')
   const [frame, setFrame] = useState<FrameAttachment | null>(null)
@@ -441,7 +488,13 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
   const active = entries.length > 0 || pending || error !== null
   return (
     <section className={`momentq-conversation ${conversationCss.root}`} data-phase={active ? 'active' : 'hero'}>
-      <ContextHeader state={state} settings={settings} />
+      <ContextHeader
+        state={state}
+        settings={settings}
+        transcriptionToggle={onToggleTranscription === undefined
+          ? null
+          : <TranscriptionToggle state={state} onToggle={onToggleTranscription} />}
+      />
       <div className={conversationCss.scrollBody}>
         <div className={conversationCss.viewArea}>
           {active ? <ConversationTranscript entries={entries} pending={pending} error={error} /> : (
@@ -458,6 +511,11 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
         </div>
       <div className={`${conversationCss.composerSeat} ${active ? '' : conversationCss.composerHero}`}>
           <SubtitleTicker state={state} playbackTime={playbackTime} />
+          {state?.transcriptionError !== undefined && (
+            <div className={chatCss.openError} role="alert" data-transcription-error>
+              {state.transcriptionError}
+            </div>
+          )}
           <Composer
             available={state !== null}
             draft={draft}

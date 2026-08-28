@@ -41,6 +41,9 @@ function canTransition(from: TranscriptionState, to: TranscriptionState): boolea
   return (from === 'inactive' && to === 'active')
     || (from === 'active' && to === 'paused')
     || (from === 'paused' && to === 'active')
+    // Explicit stops (capture failure, companion loss) deactivate; TOGGLE
+    // never produces 'inactive' so the user path stays pause/resume.
+    || (to === 'inactive' && from !== 'inactive')
 }
 
 function toggledState(state: TranscriptionState): TranscriptionState {
@@ -63,6 +66,8 @@ export function reduceTabState(
       transcription: preserve ? state.transcription : 'inactive',
       ...(preserve && state.subtitleSegments !== undefined ? { subtitleSegments: state.subtitleSegments } : {}),
       ...(preserve && state.subtitleIdentity !== undefined ? { subtitleIdentity: state.subtitleIdentity } : {}),
+      ...(preserve && state.subtitleSource !== undefined ? { subtitleSource: state.subtitleSource } : {}),
+      ...(preserve && state.transcriptPreview !== undefined ? { transcriptPreview: state.transcriptPreview } : {}),
     }
   }
 

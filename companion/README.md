@@ -1,19 +1,29 @@
-# MomentQ Companion（规划中）
+# MomentQ Companion
 
-本地伴随服务承载全部与音频相关的职责：标签页音频捕获、转码（`16kHz / 16bit / mono PCM`）、实时 ASR 编排、ASR Run 生命周期与字幕持久化。本包不嵌入 DSH 框架，也不保存模型 API Key 以外的任何服务密钥副本。
+本地伴随服务：为浏览器扩展编排百度实时语音识别（后续可插拔其他云端或本地 Provider）。本包不嵌入 DSH 框架，也不保存任何服务密钥副本。
 
-## ASR Provider 边界
+## 音频链路
 
-字幕抓取（浏览器扩展内完成）与语音识别（companion 内完成）是两条独立来源，产出同一种片段格式 `{ start, end, text }`，最终都通过 MomentQ Host 的 `syncTranscript(identity, source, segments)` 写入 `transcript.jsonl`：
+1. 扩展通过 `chrome.tabCapture` 抓取**当前标签页**的音频（其他标签页不会混入），在 offscreen 文档里降采样为 `16kHz / 16bit / mono PCM`，静音段（暂停、静音）直接丢弃。
+2. PCM 帧经**本机回环 WebSocket**（默认 `ws://127.0.0.1:3090`）发送到 companion；原始音频只在扩展与 companion 之间传输，不落盘、不出本机、不经过任何远端（百度只收到识别流）。
+3. companion 维持到百度 `wss://vop.baidu.com/realtime_asr` 的一路连接：OAuth 换取 access token、START 握手、心跳忽略、句级 `final_result` 断句、接近一小时主动续接。
+4. companion 用扩展定期发来的 `clock`（媒体播放时间）把每个句子的音频相对时间锚定到媒体时间轴；拖动进度会被检测为 seek，丢弃进行中的句子并裁剪覆盖到新播放位置之后的段落。
+5. 每句最终结果即时通过 Host 的 `syncTranscript(identity, 'asr', segments)` 全量替换写入 `transcript.jsonl`，与 B 站字幕（`source='bilibili'`）同构。
 
-- B 站 AI/原生字幕：`source = 'bilibili'`，由扩展导入；取得有效字幕后禁止启动 ASR。
-- 语音识别转录：`source = 'asr'`，由 companion 产出；仅在无字幕或用户主动开启时运行。
+密钥（`BAIDU_ASR_APP_ID` / `BAIDU_ASR_API_KEY` / `BAIDU_ASR_SECRET_KEY`）只存在于 companion 进程环境；扩展仅持有 companion 地址与 provider 选择，不接触任何 ASR 凭据。
 
-Provider 是 companion 内部的可插拔接口，扩展不感知具体实现：
+## 运行
 
-- Provider 以 `{ id, label }` 描述注册；云端服务商（第一家暂定百度实时语音识别，后续可加腾讯、火山、Deepgram 等）与本地模型（如 whisper 系）实现同一接口。
-- 所有云服务商密钥（API Key / Secret Key / Access Token）只存在于 companion 进程；扩展与 Side Panel 设置仅持有 companion 地址和 provider id。
-- 扩展与 companion 之间只交换播放状态、provider 选择与最终字幕段；不传原始音频与密钥。
-- 长连接（如百度 WebSocket）在接近时限时由 companion 主动续接；只保留最终结果，临时结果仅用于界面显示。
+```powershell
+$env:BAIDU_ASR_APP_ID = "..."
+$env:BAIDU_ASR_API_KEY = "..."     # 即百度智能云 API Key
+$env:BAIDU_ASR_SECRET_KEY = "..."
+pnpm --filter momentq-companion build
+node dist/index.js
+```
 
-在 provider 落地前，扩展的播放/暂停悬浮控件只切换本地转录状态，不代表 ASR 已在工作。
+环境变量：`MOMENTQ_COMPANION_PORT`（默认 3090）、`MOMENTQ_HOST_BASE_URL`（默认 `http://127.0.0.1:3182`）、`BAIDU_ASR_DEV_PID`（默认 80001 中文普通话）。未配置密钥时服务照常启动，`GET /health` 返回 `configured:false`，开始转录会得到 `provider-not-configured` 错误。
+
+## Provider 边界
+
+Provider 是 companion 内部的可插拔接口：云端（百度先行，腾讯/火山/Deepgram 可后续增加）与本地模型（如 FunASR、sherpa-onnx 真流式引擎）实现同一接口。接入新 Provider 不需要改动扩展与字幕层；扩展与 companion 之间只交换播放时钟、provider 选择与最终字幕段。

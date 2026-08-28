@@ -17,18 +17,26 @@ import type {
   ResolvePageSnapshotMessage,
   PageSubtitleTracksMessageEnvelope,
   BilibiliSubtitleSegment,
+  AsrStartFromPanelMessage,
+  AsrEventMessage,
+  AsrSessionMessage,
 } from '../shared/protocol'
 import { isBilibiliPageSnapshot, isPageSubtitleTracksMessageEnvelope } from '../shared/protocol'
+import { isCompanionServerMessage } from '../../../shared/src/companion-protocol'
 import { fetchBilibiliSubtitle, fetchSubtitleTrackUrl } from './bilibili-subtitle'
 import { MomentQClient } from '../shared/host-client'
 import { loadSettings } from '../shared/settings-store'
 
-type WorkerRequest = PageContextRuntimeMessage | ResolvePageSnapshotMessage | GetTabStateMessage | ToggleTranscriptionMessage | ToggleCurrentTranscriptionMessage | CaptureCurrentFrameMessage | GetCurrentVideoTimeMessage | PageSubtitleTracksMessageEnvelope
+type WorkerRequest = PageContextRuntimeMessage | ResolvePageSnapshotMessage | GetTabStateMessage | ToggleTranscriptionMessage | ToggleCurrentTranscriptionMessage | CaptureCurrentFrameMessage | GetCurrentVideoTimeMessage | PageSubtitleTracksMessageEnvelope | AsrStartFromPanelMessage | AsrEventMessage | AsrSessionMessage
 
 const storageKey = (tabId: number) => `tab:${tabId}`
 const tabOperations = new TabOperationQueue()
 const subtitleSyncs = new Map<string, Promise<void>>()
 const publishRevisions = new Map<number, number>()
+
+/** Tab owning the single offscreen ASR session, if any. */
+let asrTabId: number | null = null
+let clockPollTimer: ReturnType<typeof setInterval> | undefined
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -44,6 +52,13 @@ function requestType(value: unknown): WorkerRequest['type'] | null {
     || value.type === 'MOMENTQ_CAPTURE_CURRENT_FRAME') return value.type
   if (value.type === 'MOMENTQ_GET_CURRENT_VIDEO_TIME') return value.type
   if (value.type === 'PAGE_SUBTITLE_TRACKS' && isPageSubtitleTracksMessageEnvelope(value)) return value.type
+  if (value.type === 'MOMENTQ_ASR_START_FROM_PANEL') {
+    return typeof value.tabId === 'number' && Number.isSafeInteger(value.tabId) && value.tabId >= 0
+      && typeof value.streamId === 'string' && value.streamId !== ''
+      ? value.type
+      : null
+  }
+  if (value.type === 'MOMENTQ_ASR_EVENT' || value.type === 'MOMENTQ_ASR_SESSION') return value.type
   return null
 }
 
@@ -67,6 +82,204 @@ function publishState(tabId: number, state: MomentQTabState | null): void {
   const message: TabStateChangedMessage = { type: 'MOMENTQ_TAB_STATE_CHANGED', tabId, state, revision }
   void chrome.runtime.sendMessage(message).catch(() => {})
   void chrome.tabs.sendMessage(tabId, message).catch(() => {})
+}
+
+// --- ASR session plumbing (background ↔ offscreen) ---
+
+function sendToOffscreen(message: unknown): void {
+  void chrome.runtime.sendMessage(message).catch(() => {})
+}
+
+async function ensureOffscreenDocument(): Promise<void> {
+  if (await chrome.offscreen.hasDocument()) return
+  await chrome.offscreen.createDocument({
+    url: 'offscreen.html',
+    reasons: ['USER_MEDIA'],
+    justification: 'Capture tab audio for MomentQ speech recognition',
+  })
+}
+
+async function closeOffscreenIfIdle(): Promise<void> {
+  if (asrTabId !== null) return
+  try {
+    if (await chrome.offscreen.hasDocument()) await chrome.offscreen.closeDocument()
+  } catch { /* the document may already be gone */ }
+}
+
+function stopClockPolling(): void {
+  if (clockPollTimer !== undefined) {
+    clearInterval(clockPollTimer)
+    clockPollTimer = undefined
+  }
+}
+
+function startClockPolling(): void {
+  if (clockPollTimer !== undefined) return
+  // The side panel polls HTMLVideoElement.currentTime for its own ticker;
+  // the recognition stream needs the same clock to anchor transcripts to
+  // the media timeline, so poll the content script directly.
+  clockPollTimer = setInterval(() => {
+    const tabId = asrTabId
+    if (tabId === null) {
+      stopClockPolling()
+      return
+    }
+    void chrome.tabs.sendMessage(tabId, { type: 'MOMENTQ_GET_CURRENT_VIDEO_TIME' })
+      .then((value: unknown) => {
+        if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return
+        sendToOffscreen({ type: 'MOMENTQ_ASR_CLOCK', tabId, mediaTime: value })
+      })
+      .catch(() => {})
+  }, 250)
+}
+
+/** Tear down the capture pipeline for the tab that owns it. */
+async function stopAsrSession(): Promise<void> {
+  if (asrTabId === null) return
+  stopClockPolling()
+  sendToOffscreen({ type: 'MOMENTQ_ASR_STOP' })
+  asrTabId = null
+  await closeOffscreenIfIdle()
+}
+
+/** Mark a tab's transcription inactive and tear its session down. */
+async function deactivateTranscription(tabId: number, state: MomentQTabState, error?: string): Promise<MomentQTabState> {
+  const { transcriptPreview: _preview, ...withoutPreview } = state
+  const next: MomentQTabState = {
+    ...withoutPreview,
+    transcription: 'inactive',
+    ...(error === undefined ? {} : { transcriptionError: error }),
+  }
+  await writeState(tabId, next)
+  publishState(tabId, next)
+  await stopAsrSession()
+  await closeOffscreenIfIdle()
+  return next
+}
+
+/**
+ * Start transcription with a tab-capture stream id. The side panel passes
+ * one it obtained inside its own click handler (the reliable gesture
+ * surface); other entry points let the background try, which some surfaces
+ * reject without a user gesture.
+ */
+async function beginTranscription(tabId: number, streamId: string | undefined): Promise<MomentQTabState | null> {
+  return await tabOperations.run(tabId, async () => {
+    const state = await readState(tabId)
+    if (state === null || state.transcription !== 'inactive') return await readState(tabId)
+    const ownedBySubtitles = state.subtitleSource !== 'asr'
+      && (state.subtitleSegments?.length ?? 0) > 0
+    if (ownedBySubtitles) return state
+    try {
+      const settings = await loadSettings()
+      const resolvedStreamId = streamId ?? await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId })
+      // The content directory must exist before the companion persists rows.
+      const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
+      await client.ensureContent({ identity: state.context.identity, metadata: state.context.metadata })
+      await ensureOffscreenDocument()
+      const { transcriptPreview: _preview, transcriptionError: _error, ...withoutAsrUi } = state
+      const next: MomentQTabState = {
+        ...withoutAsrUi,
+        transcription: 'active',
+      }
+      await writeState(tabId, next)
+      publishState(tabId, next)
+      asrTabId = tabId
+      startClockPolling()
+      sendToOffscreen({
+        type: 'MOMENTQ_ASR_START',
+        tabId,
+        streamId: resolvedStreamId,
+        identity: state.context.identity,
+        companionBaseUrl: settings.companionBaseUrl,
+      })
+      return await readState(tabId)
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      return await deactivateTranscription(tabId, state, `无法开始转录：${reason}`)
+    }
+  })
+}
+
+async function applyAsrEvent(message: AsrEventMessage): Promise<void> {
+  const tabId = message.tabId
+  if (!isCompanionServerMessage(message.event)) return
+  await tabOperations.run(tabId, async () => {
+    const state = await readState(tabId)
+    if (state === null) return
+    const event = message.event
+    if (event.type === 'ready') {
+      if (state.transcriptionError === undefined) return
+      const { transcriptionError: _error, ...withoutError } = state
+      await writeState(tabId, withoutError)
+      publishState(tabId, withoutError)
+      return
+    }
+    if (event.type === 'partial') {
+      const next = { ...state, transcriptPreview: event.text, subtitleSource: 'asr' as const }
+      await writeState(tabId, next)
+      publishState(tabId, next)
+      return
+    }
+    if (event.type === 'final') {
+      const identity = state.context.identity
+      const segment: BilibiliSubtitleSegment = { start: event.start, end: event.end, text: event.text }
+      const { transcriptPreview: _preview, ...withoutPreview } = state
+      const next: MomentQTabState = {
+        ...withoutPreview,
+        subtitleSource: 'asr',
+        subtitleSegments: [...(state.subtitleSegments ?? []), segment].slice(-5000),
+        ...(identity.kind === 'vod'
+          ? { subtitleIdentity: { bvid: identity.bvid, cid: identity.cid } }
+          : {}),
+      }
+      await writeState(tabId, next)
+      publishState(tabId, next)
+      return
+    }
+    if (event.type === 'persisted') return
+    // Errors: a lost provider/companion ends recognition; transient capture
+    // issues are surfaced without tearing the session down.
+    const fatal = event.code === 'provider-not-configured'
+      || event.code === 'companion-disconnected'
+      || event.code === 'capture-start'
+      || event.code === 'provider-connect'
+    if (fatal) await deactivateTranscription(tabId, state, event.message)
+    else {
+      const next = { ...state, transcriptionError: event.message }
+      await writeState(tabId, next)
+      publishState(tabId, next)
+    }
+  })
+}
+
+async function applyAsrSession(message: AsrSessionMessage): Promise<void> {
+  if (message.tabId !== null) {
+    asrTabId = message.tabId
+    startClockPolling()
+    return
+  }
+  // The offscreen session ended (socket loss or stop). Deactivate the owning
+  // tab's transcription state so the UI reflects reality.
+  const tabId = asrTabId
+  asrTabId = null
+  stopClockPolling()
+  if (tabId !== null) {
+    await tabOperations.run(tabId, async () => {
+      const state = await readState(tabId)
+      if (state === null || state.transcription === 'inactive') return
+      await deactivateTranscription(tabId, state, '转录已停止')
+    })
+  }
+  await closeOffscreenIfIdle()
+}
+
+/** After a service-worker restart, re-attach to a live offscreen session. */
+async function restoreAsrSession(): Promise<void> {
+  const reply = await chrome.runtime.sendMessage({ type: 'MOMENTQ_ASR_QUERY' }).catch(() => null) as AsrSessionMessage | null
+  if (reply !== null && isRecord(reply)) {
+    await applyAsrSession(reply as AsrSessionMessage)
+  }
 }
 
 async function applyContextUnlocked(tabId: number, context: BilibiliContext | null): Promise<MomentQTabState | null> {
@@ -95,6 +308,10 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
   const previous = subtitleSyncs.get(key)
   if (previous !== undefined) return await previous
   const current = (async (): Promise<void> => {
+    const existing = await readState(tabId)
+    // While recognition owns this content's transcript, a re-discovered
+    // Bilibili track must not silently replace accumulated ASR rows.
+    if (existing?.subtitleSource === 'asr') return
     const settings = await loadSettings()
     const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
     const segments = await fetchBilibiliSubtitle(context.identity.bvid, context.identity.cid)
@@ -108,9 +325,12 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
     if (state?.context.kind === 'vod'
       && state.context.identity.bvid === context.identity.bvid
       && state.context.identity.cid === context.identity.cid) {
+      await stopAsrSession()
+      const { transcriptPreview: _preview, ...withoutPreview } = state
       const next = {
-        ...state,
+        ...withoutPreview,
         transcription: 'inactive' as const,
+        subtitleSource: 'bilibili' as const,
         subtitleSegments: segments.slice(-5000),
         subtitleIdentity: { bvid: context.identity.bvid, cid: context.identity.cid },
       }
@@ -131,6 +351,9 @@ async function syncPageSubtitleTracks(tabId: number, message: PageSubtitleTracks
   if (state?.context.kind !== 'vod'
     || state.context.identity.bvid !== message.payload.bvid
     || state.context.identity.cid !== message.payload.cid) return
+  // While recognition owns this content's transcript, neither a proven
+  // absence nor a late track may wipe or replace its accumulated rows.
+  if (state.subtitleSource === 'asr' || state.transcription !== 'inactive') return
   if (message.payload.status === 'absent') {
     const settings = await loadSettings()
     const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
@@ -143,6 +366,7 @@ async function syncPageSubtitleTracks(tabId: number, message: PageSubtitleTracks
     const {
       subtitleSegments: _segments,
       subtitleIdentity: _identity,
+      subtitleSource: _source,
       ...withoutSubtitle
     } = current
     const next = { ...withoutSubtitle, transcription: 'inactive' as const }
@@ -173,10 +397,13 @@ async function syncPageSubtitleTracks(tabId: number, message: PageSubtitleTracks
     if (current.subtitleIdentity?.bvid === message.payload.bvid
       && current.subtitleIdentity.cid === message.payload.cid
       && (current.subtitleSegments?.length ?? 0) > 0) return
+    await stopAsrSession()
+    const { transcriptPreview: _preview, ...withoutPreview } = current
     const next = {
-      ...current,
+      ...withoutPreview,
       context,
       transcription: 'inactive' as const,
+      subtitleSource: 'bilibili' as const,
       subtitleSegments: segments.slice(-5000) as BilibiliSubtitleSegment[],
       subtitleIdentity: { bvid: message.payload.bvid, cid: message.payload.cid },
     }
@@ -219,12 +446,15 @@ async function refreshVodContextUnlocked(tabId: number, url: string): Promise<Mo
 
 async function toggleTranscriptionUnlocked(tabId: number): Promise<MomentQTabState | null> {
   const previous = await readState(tabId)
-  if (previous?.subtitleSegments !== undefined && previous.subtitleSegments.length > 0) return previous
-  const next = reduceTabState(previous, { type: 'TOGGLE_TRANSCRIPTION' })
+  if (previous === null) return null
+  if (previous.transcription === 'inactive') return await beginTranscription(tabId, undefined)
+  const nextTranscription = previous.transcription === 'active' ? 'paused' as const : 'active' as const
+  const next = reduceTabState(previous, { type: 'SET_TRANSCRIPTION', transcription: nextTranscription })
   if (next !== previous) {
     await writeState(tabId, next)
     publishState(tabId, next)
   }
+  sendToOffscreen({ type: nextTranscription === 'paused' ? 'MOMENTQ_ASR_PAUSE' : 'MOMENTQ_ASR_RESUME' })
   return next
 }
 
@@ -246,6 +476,23 @@ async function handleRequest(
       await syncPageSubtitleTracks(tabId, message)
       return await readState(tabId)
     })
+  }
+
+  if (type === 'MOMENTQ_ASR_START_FROM_PANEL') {
+    const request = message as AsrStartFromPanelMessage
+    return await beginTranscription(request.tabId, request.streamId)
+  }
+
+  if (type === 'MOMENTQ_ASR_EVENT') {
+    const event = message as unknown as AsrEventMessage
+    if (!isCompanionServerMessage(event.event)) return null
+    await applyAsrEvent(event)
+    return await readState(event.tabId)
+  }
+
+  if (type === 'MOMENTQ_ASR_SESSION') {
+    await applyAsrSession(message as AsrSessionMessage)
+    return null
   }
 
   if (type === 'MOMENTQ_PAGE_CONTEXT') {
@@ -323,6 +570,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   publishRevisions.delete(tabId)
+  if (asrTabId === tabId) void stopAsrSession()
   void tabOperations.run(tabId, () => writeState(tabId, reduceTabState(null, { type: 'REMOVE_TAB' })))
 })
 
@@ -367,3 +615,4 @@ async function configureSidePanel(): Promise<void> {
 }
 
 void configureSidePanel()
+void restoreAsrSession()

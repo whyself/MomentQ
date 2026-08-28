@@ -13,6 +13,6 @@
     "types": ["chrome", "node", "vitest/globals"],
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "tests/**/*.tsx", "vite.config.ts", "vite.content.config.ts"],
+  "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "tests/**/*.tsx", "vite.config.ts", "vite.content.config.ts", "vite.pagebridge.config.ts"],
   "exclude": ["src/vendor"]
 }

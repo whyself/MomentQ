@@ -91,14 +91,23 @@ export type ResolvePageSnapshotMessage = {
 
 export type TranscriptionState = 'inactive' | 'active' | 'paused'
 
+/** Where the current subtitleSegments came from; ASR finals land here too. */
+export type SubtitleSource = 'bilibili' | 'asr'
+
 export type MomentQTabState = {
   tabId: number
   context: BilibiliContext
   transcription: TranscriptionState
-  /** Complete native/AI subtitle track, when available for this VOD. */
+  /** Complete subtitle track or accumulated ASR finals for this content. */
   subtitleSegments?: BilibiliSubtitleSegment[]
   /** Identity of subtitleSegments; the UI must never render across a mismatch. */
   subtitleIdentity?: { bvid: string; cid: string }
+  /** Provenance of subtitleSegments; set to 'asr' while recognition owns it. */
+  subtitleSource?: SubtitleSource
+  /** In-flight ASR partial sentence, display-only until a final lands. */
+  transcriptPreview?: string
+  /** Last ASR/capture failure worth surfacing in the side panel. */
+  transcriptionError?: string
 }
 
 export type GetTabStateMessage = {
@@ -129,6 +138,50 @@ export type TabStateChangedMessage = {
   state: MomentQTabState | null
   /** Monotonic per-tab publication id used to reject late messages. */
   revision?: number
+}
+
+// --- Internal ASR pipeline messages (background ↔ offscreen ↔ side panel) ---
+
+/**
+ * Side panel start: the panel owns the tabCapture user gesture, so it calls
+ * chrome.tabCapture.getMediaStreamId() in its click handler and hands the
+ * streamId to the background for the rest of the pipeline.
+ */
+export type AsrStartFromPanelMessage = {
+  type: 'MOMENTQ_ASR_START_FROM_PANEL'
+  tabId: number
+  streamId: string
+}
+
+export type AsrStartMessage = {
+  type: 'MOMENTQ_ASR_START'
+  tabId: number
+  streamId: string
+  identity: BilibiliContext['identity']
+  companionBaseUrl: string
+}
+
+export type AsrClockMessage = {
+  type: 'MOMENTQ_ASR_CLOCK'
+  tabId: number
+  mediaTime: number
+}
+
+export type AsrPauseMessage = { type: 'MOMENTQ_ASR_PAUSE' }
+export type AsrResumeMessage = { type: 'MOMENTQ_ASR_RESUME' }
+export type AsrStopMessage = { type: 'MOMENTQ_ASR_STOP' }
+export type AsrQueryMessage = { type: 'MOMENTQ_ASR_QUERY' }
+
+/** Offscreen → background session answer (also used after service-worker restarts). */
+export type AsrSessionMessage = {
+  type: 'MOMENTQ_ASR_SESSION'
+  tabId: number | null
+}
+
+export type AsrEventMessage = {
+  type: 'MOMENTQ_ASR_EVENT'
+  tabId: number
+  event: import('../../../shared/src/companion-protocol').CompanionServerMessage
 }
 
 type PlainRecord = Record<string, unknown>

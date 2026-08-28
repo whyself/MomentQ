@@ -6,7 +6,9 @@
   "permissions": [
     "sidePanel",
     "storage",
-    "tabs"
+    "tabs",
+    "tabCapture",
+    "offscreen"
   ],
   "host_permissions": [
     "https://www.bilibili.com/*",

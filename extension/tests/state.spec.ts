@@ -76,9 +76,10 @@ describe('reduceTabState', () => {
     expect(reduceTabState(inactive, {
       type: 'SET_TRANSCRIPTION', transcription: 'paused',
     })).toBe(inactive)
+    // An explicit stop deactivates (capture failure, companion loss).
     expect(reduceTabState(active, {
       type: 'SET_TRANSCRIPTION', transcription: 'inactive',
-    })).toBe(active)
+    })?.transcription).toBe('inactive')
   })
 
   it('toggles through the same legal transitions', () => {
@@ -122,6 +123,34 @@ describe('TabOperationQueue', () => {
       context: sameIdentityUpdated,
       transcription: 'active',
     })
+  })
+
+  it('allows an explicit stop (active to inactive) but toggle never deactivates', () => {
+    const active = {
+      tabId: 7,
+      context: firstContext,
+      transcription: 'active' as const,
+      subtitleSource: 'asr' as const,
+      transcriptPreview: '识别中的句子',
+    }
+    const stopped = reduceTabState(active, { type: 'SET_TRANSCRIPTION', transcription: 'inactive' })
+    expect(stopped).toMatchObject({ transcription: 'inactive', transcriptPreview: '识别中的句子' })
+    // TOGGLE from active goes to paused; only SET can deactivate.
+    expect(reduceTabState(active, { type: 'TOGGLE_TRANSCRIPTION' })?.transcription).toBe('paused')
+    expect(reduceTabState(stopped, { type: 'TOGGLE_TRANSCRIPTION' })?.transcription).toBe('active')
+  })
+
+  it('preserves the ASR subtitle source across same-identity context updates', () => {
+    const asrState = {
+      tabId: 7,
+      context: firstContext,
+      transcription: 'active' as const,
+      subtitleSegments: [{ start: 0, end: 1, text: '转写结果' }],
+      subtitleIdentity: { bvid: 'BV1xx411c7mD', cid: '100' },
+      subtitleSource: 'asr' as const,
+    }
+    expect(reduceTabState(asrState, { type: 'SET_CONTEXT', tabId: 7, context: sameIdentityUpdated }))
+      .toMatchObject({ subtitleSource: 'asr', subtitleSegments: [{ text: '转写结果' }] })
   })
 
   it('does not block operations for different tabs', async () => {

@@ -35,16 +35,22 @@ function subtitleFingerprint(state: MomentQTabState | null): string {
 function Control({ state, onToggle }: { state: MomentQTabState | null; onToggle: () => void }) {
   if (state === null) return null
   const active = state.transcription === 'active'
+  const source = state.subtitleSource
   const hasSubtitle = state.context.kind === 'vod'
     && state.subtitleIdentity?.bvid === state.context.identity.bvid
     && state.subtitleIdentity.cid === state.context.identity.cid
     && (state.subtitleSegments?.length ?? 0) > 0
+  const title = hasSubtitle && source === 'asr'
+    ? '实时字幕生成中'
+    : hasSubtitle
+      ? '已使用 B 站字幕，不需要语音转录'
+      : (active ? '暂停转录' : '开始转录')
   return (
     <Button
       variant="toolbar"
       size="sm"
-      aria-label={active ? '暂停转录' : '开始转录'}
-      title={hasSubtitle ? '已使用 B 站字幕，不需要语音转录' : (active ? '暂停转录' : '开始转录')}
+      aria-label={title}
+      title={title}
       icon={active ? <IconPauseOutline16 size={16} /> : <IconPlayOutline16 size={16} />}
       disabled={hasSubtitle}
       onClick={onToggle}

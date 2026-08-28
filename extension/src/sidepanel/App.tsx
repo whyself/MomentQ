@@ -93,12 +93,38 @@ export function App({ subscribe }: {
     return await chrome.runtime.sendMessage({ type: 'MOMENTQ_CAPTURE_CURRENT_FRAME' }) as string | null
   }
 
+  function toggleTranscription(): void {
+    if (state === null) return
+    void (async () => {
+      if (state.transcription === 'inactive') {
+        // chrome.tabCapture's user-gesture gate is satisfied inside this
+        // click handler on an extension surface; the background completes
+        // the pipeline with the handed-over stream id.
+        const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: state.tabId }).catch(() => null)
+        if (streamId === null) return
+        await chrome.runtime.sendMessage({
+          type: 'MOMENTQ_ASR_START_FROM_PANEL',
+          tabId: state.tabId,
+          streamId,
+        }).catch(() => {})
+        return
+      }
+      await chrome.runtime.sendMessage({
+        type: 'MOMENTQ_TOGGLE_TRANSCRIPTION',
+        tabId: state.tabId,
+      }).catch(() => {})
+    })()
+  }
+
   const loadHistory = useCallback(async (current: MomentQTabState) => {
     if (settings === null) return []
     const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
     await client.ensureContent({ identity: current.context.identity, metadata: current.context.metadata })
     return await client.getHistory(current.context.identity)
   }, [settings])
+
+  const hasChromeRuntime = typeof chrome !== 'undefined' && chrome.runtime !== undefined
+    && chrome.tabCapture !== undefined
 
   return (
     <main className="momentq-shell">
@@ -109,6 +135,7 @@ export function App({ subscribe }: {
         onLoadHistory={loadHistory}
         onCaptureFrame={captureCurrentFrame}
         onSubmit={submitMessage}
+        {...(hasChromeRuntime ? { onToggleTranscription: toggleTranscription } : {})}
         settings={settings === null ? null : (
           <SettingsView settings={settings} onSettingsChange={setSettings} />
         )}
