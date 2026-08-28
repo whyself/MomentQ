@@ -103,7 +103,18 @@ function SubtitleTicker({ state, playbackTime }: { state: MomentQTabState | null
   // Render only the visible window. Keeping hundreds of transparent rows in
   // the DOM made each 250 ms state update recalculate a large scrollHeight;
   // that is visually indistinguishable from subtitles jumping up and down.
-  if (window === null && (preview === undefined || preview === '')) return null
+  const diagnostic = !subtitleMatches || segments.length === 0
+    ? state?.context.kind === 'vod' && state.subtitleSource !== 'asr'
+      ? state.subtitleDiagnostic
+      : undefined
+    : undefined
+  if (window === null && (preview === undefined || preview === '')) {
+    return diagnostic === undefined ? null : (
+      <div className="momentq-subtitle-ticker" data-subtitle-diagnostic aria-live="off">
+        <div className="momentq-subtitle-line">{diagnostic}</div>
+      </div>
+    )
+  }
   const index = window?.index ?? -1
   const start = window?.start ?? 0
   const visible = window === null ? [] : segments.slice(start, index + 1)

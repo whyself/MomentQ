@@ -8,6 +8,8 @@ export type BilibiliSubtitleReport = {
    * ask for login; only then may callers treat absence as authoritative.
    */
   definitiveEmpty: boolean
+  /** What the validated index actually exposed, for panel diagnostics. */
+  diagnostic: string | null
 }
 
 /** Fetch the best available Bilibili subtitle track for one VOD page. */
@@ -24,24 +26,31 @@ export async function fetchBilibiliSubtitle(
       `https://api.bilibili.com/x/player/v2?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(cid)}`,
     ]
     let definitiveEmpty = false
+    let diagnostic: string | null = null
     for (const indexUrl of indexUrls) {
       const indexResponse = await request(indexUrl, { credentials: 'include' })
-      if (!indexResponse.ok) continue
+      if (!indexResponse.ok) {
+        diagnostic = `索引 HTTP ${indexResponse.status}`
+        continue
+      }
       const index = parseSubtitleIndex(await indexResponse.json())
       // Identity is mandatory. A stale/cached player response must never be
       // relabelled as the requested video merely because its URL was current.
       if (index === null || index.bvid !== bvid || index.cid !== cid) continue
+      diagnostic = index.tracks.length > 0
+        ? `轨道 ${index.tracks.length} 条: ${index.trackLabels.slice(0, 4).join(', ')}`
+        : index.needLogin ? '无轨道（B 站提示字幕需登录生成）' : '无轨道'
       for (const url of index.tracks) {
         const response = await request(url, { credentials: 'include' })
         if (!response.ok) continue
         const segments = normalizeSubtitleBody(await response.json())
-        if (segments.length > 0) return { segments, definitiveEmpty: false }
+        if (segments.length > 0) return { segments, definitiveEmpty: false, diagnostic: `${diagnostic}，已取到 ${segments.length} 行` }
       }
       definitiveEmpty ||= index.definitiveEmpty
     }
-    return { segments: null, definitiveEmpty }
-  } catch {
-    return { segments: null, definitiveEmpty: false }
+    return { segments: null, definitiveEmpty, diagnostic }
+  } catch (error) {
+    return { segments: null, definitiveEmpty: false, diagnostic: `获取异常: ${error instanceof Error ? error.message : 'unknown'}` }
   }
 }
 

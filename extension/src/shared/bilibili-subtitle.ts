@@ -73,6 +73,10 @@ export type SubtitleIndex = {
   bvid: string
   cid: string
   tracks: string[]
+  /** Human-readable lan/lan_doc labels, for UI diagnostics. */
+  trackLabels: string[]
+  /** True when Bilibili says subtitle generation needs a login. */
+  needLogin: boolean
   /** Empty is authoritative only when Bilibili does not require login. */
   definitiveEmpty: boolean
 }
@@ -89,12 +93,33 @@ export function parseSubtitleIndex(value: unknown): SubtitleIndex | null {
     : text(rawCid)
   if (bvid === undefined || cid === undefined) return null
   const tracks = subtitleTracks(value)
+  const rawTracks = [
+    ...flatMapTrackRecords(record(root?.subtitle)),
+    ...flatMapTrackRecords(record(data?.subtitle)),
+    ...flatMapTrackRecords(record(record(root?.videoData)?.subtitle)),
+  ]
+  const trackLabels = rawTracks
+    .map(item => `${text(item.lan) ?? '?'}(${text(item.lan_doc) ?? '?'})`)
+  const needLogin = data.need_login_subtitle === true
   return {
     bvid,
     cid,
     tracks,
-    definitiveEmpty: tracks.length === 0 && data.need_login_subtitle !== true,
+    trackLabels,
+    needLogin,
+    definitiveEmpty: tracks.length === 0 && !needLogin,
   }
+}
+
+function flatMapTrackRecords(subtitle: RecordValue | null): RecordValue[] {
+  const candidates: unknown[] = [
+    subtitle?.subtitles,
+    subtitle?.list,
+    subtitle?.body,
+  ]
+  return candidates.flatMap(candidate => Array.isArray(candidate) ? candidate : [])
+    .map(record)
+    .filter((item): item is RecordValue => item !== null)
 }
 
 /**

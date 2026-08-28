@@ -104,6 +104,8 @@ export type MomentQTabState = {
   subtitleIdentity?: { bvid: string; cid: string }
   /** Provenance of subtitleSegments; set to 'asr' while recognition owns it. */
   subtitleSource?: SubtitleSource
+  /** Last subtitle-index probe result, shown when the video shows no track. */
+  subtitleDiagnostic?: string
   /** In-flight ASR partial sentence, display-only until a final lands. */
   transcriptPreview?: string
   /** Last ASR/capture failure worth surfacing in the side panel. */

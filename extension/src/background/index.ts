@@ -392,9 +392,9 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
         || state.context.identity.cid !== cid) return
       if (segments.length > 0) {
         await stopAsrSession()
-        const { transcriptPreview: _preview, ...withoutPreview } = state
+        const { transcriptPreview: _preview, subtitleDiagnostic: _diagnostic, ...withoutStale } = state
         const next = {
-          ...withoutPreview,
+          ...withoutStale,
           transcription: 'inactive' as const,
           subtitleSource: 'bilibili' as const,
           subtitleSegments: segments.slice(-5000),
@@ -404,6 +404,11 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
         publishState(tabId, next)
         return
       }
+      // No usable track: surface the probe result so a genuinely trackless
+      // video is distinguishable from a broken fetch.
+      const probeNext: MomentQTabState = { ...state, subtitleDiagnostic: report.diagnostic ?? '无轨道' }
+      await writeState(tabId, probeNext)
+      publishState(tabId, probeNext)
       if (state.subtitleSource === 'asr' || state.transcription !== 'inactive') return
       if ((state.subtitleSegments?.length ?? 0) === 0) return
       const {

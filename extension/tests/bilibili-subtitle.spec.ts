@@ -58,6 +58,7 @@ describe('Bilibili subtitle acquisition', () => {
         { start: 1.5, end: 2.5, text: '第二行' },
       ],
       definitiveEmpty: false,
+      diagnostic: '轨道 2 条: en(English), zh-CN(中文)，已取到 2 行',
     })
     expect(calls).toEqual([
       'https://api.bilibili.com/x/player/wbi/v2?bvid=BV1xx&cid=42',
@@ -77,6 +78,7 @@ describe('Bilibili subtitle acquisition', () => {
     await expect(fetchBilibiliSubtitle('BV1xx', '42', request)).resolves.toEqual({
       segments: null,
       definitiveEmpty: true,
+      diagnostic: '无轨道',
     })
   })
 
@@ -89,6 +91,7 @@ describe('Bilibili subtitle acquisition', () => {
     await expect(fetchBilibiliSubtitle('BV1xx', '42', request)).resolves.toEqual({
       segments: null,
       definitiveEmpty: true,
+      diagnostic: '无轨道',
     })
   })
 
@@ -107,6 +110,7 @@ describe('Bilibili subtitle acquisition', () => {
     await expect(fetchBilibiliSubtitle('BV1xx', '42', request)).resolves.toEqual({
       segments: null,
       definitiveEmpty: false,
+      diagnostic: null,
     })
     expect(calls).not.toContain('https://aisubtitle.hdslb.com/wrong.json')
   })
