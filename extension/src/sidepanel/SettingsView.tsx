@@ -190,10 +190,13 @@ function AsrSection({ draft, setDraft, saving, saveError, onSave }: {
     return () => { active = false }
   }, [draft.companionBaseUrl])
 
-  // Saved secrets display as password dots; the dots are never submitted —
-  // only text the user actually types this session counts as input.
-  const apiKeyDisplay = apiKey !== '' ? apiKey : credentialView?.baidu.configured === true ? '••••••••' : ''
-  const secretKeyDisplay = secretKey !== '' ? secretKey : credentialView?.baidu.secretKeySet === true ? '••••••••' : ''
+  // Saved secrets display as password dots whose count matches the stored
+  // key length; the dots themselves are never submitted — only text the user
+  // actually types this session counts as input.
+  const apiKeyDots = credentialView?.baidu.apiKeyLength ?? 0
+  const secretKeyDots = credentialView?.baidu.secretKeyLength ?? 0
+  const apiKeyDisplay = apiKey !== '' ? apiKey : apiKeyDots > 0 ? '•'.repeat(apiKeyDots) : ''
+  const secretKeyDisplay = secretKey !== '' ? secretKey : secretKeyDots > 0 ? '•'.repeat(secretKeyDots) : ''
   const selectAllOnFocus = (event: import('react').FocusEvent<HTMLInputElement>): void => {
     event.currentTarget.select()
   }
@@ -257,7 +260,7 @@ function AsrSection({ draft, setDraft, saving, saveError, onSave }: {
           onChange={event => { setAppId(event.target.value) }}
         />
       </Row>
-      <Row title="百度云 API Key" description="只保存在本机 companion；已保存时显示圆点，修改请重新输入。">
+      <Row title="百度云 API Key" description="只保存在本机 companion，不会上传。">
         <Input
           type="password"
           name="baiduApiKey"
@@ -269,7 +272,7 @@ function AsrSection({ draft, setDraft, saving, saveError, onSave }: {
           onChange={event => { setApiKey(event.target.value.replaceAll('•', '')) }}
         />
       </Row>
-      <Row title="百度云 Secret Key" description="只保存在本机 companion；已保存时显示圆点，修改请重新输入。">
+      <Row title="百度云 Secret Key" description="只保存在本机 companion，不会上传。">
         <Input
           type="password"
           name="baiduSecretKey"

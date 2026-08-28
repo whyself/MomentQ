@@ -214,7 +214,8 @@ describe('companion ASR server', () => {
         value: {
           provider: 'baidu',
           baidu: {
-            configured: true, appId: 'aid', apiKeyMasked: 'ab****gh', secretKeySet: true, devPid: 80001,
+            configured: true, appId: 'aid', apiKeyMasked: 'ab****gh', apiKeyLength: 8,
+            secretKeySet: true, secretKeyLength: 2, devPid: 80001,
           },
         },
       })

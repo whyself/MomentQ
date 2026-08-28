@@ -4,7 +4,10 @@ export type CompanionBaiduConfigView = {
   configured: boolean
   appId: string | null
   apiKeyMasked: string | null
+  /** Saved secret lengths, so the UI can draw length-accurate dots. */
+  apiKeyLength: number | null
   secretKeySet: boolean
+  secretKeyLength: number | null
   devPid: number
 }
 
