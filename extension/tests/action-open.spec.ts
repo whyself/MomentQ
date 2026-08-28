@@ -59,4 +59,15 @@ describe('panel-open bridge recovery', () => {
     expect(fastPath).toContain('void syncBilibiliSubtitle(tabId, stored.context)')
     expect(fastPath).toContain("stored.subtitleSource !== 'asr'")
   })
+
+  it('machine-translates non-Chinese tracks into the tab state only', async () => {
+    const source = await readFile(join(import.meta.dirname, '..', 'src', 'background', 'index.ts'), 'utf8')
+    const enrich = source.slice(source.indexOf('async function enrichWithChineseTranslation'))
+    // Gated on language and on a configured model key; never runs otherwise.
+    expect(enrich).toContain('trackNeedsChineseTranslation(segments)')
+    expect(enrich).toContain("loadModelApiKey().catch(() => '')")
+    expect(enrich).toContain("if (apiKey === '') return")
+    // The durable transcript is synced before enrichment, untranslated.
+    expect(source).toContain("void enrichWithChineseTranslation(tabId, { bvid, cid }, segments)")
+  })
 })

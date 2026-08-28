@@ -25,7 +25,8 @@ import { isBilibiliPageSnapshot, isPageSubtitleTracksMessageEnvelope } from '../
 import { isCompanionServerMessage } from '../../../shared/src/companion-protocol'
 import { fetchBilibiliSubtitle, fetchSubtitleTrackUrl } from './bilibili-subtitle'
 import { MomentQClient } from '../shared/host-client'
-import { loadSettings } from '../shared/settings-store'
+import { loadModelApiKey, loadSettings } from '../shared/settings-store'
+import { trackNeedsChineseTranslation, translateSubtitleBatch } from '../shared/translate'
 
 type WorkerRequest = PageContextRuntimeMessage | ResolvePageSnapshotMessage | GetTabStateMessage | ToggleTranscriptionMessage | ToggleCurrentTranscriptionMessage | CaptureCurrentFrameMessage | GetCurrentVideoTimeMessage | PageSubtitleTracksMessageEnvelope | AsrStartFromPanelMessage | AsrEventMessage | AsrSessionMessage
 
@@ -387,6 +388,7 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
         }
         await writeState(tabId, next)
         publishState(tabId, next)
+        void enrichWithChineseTranslation(tabId, { bvid, cid }, segments)
         return
       }
       if (state.subtitleSource === 'asr' || state.transcription !== 'inactive') return
@@ -412,9 +414,72 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
   }
 }
 
+// Non-Chinese tracks are machine-translated for display in batches; each
+// finished batch is merged into the tab state so Chinese lines appear
+// progressively while the rest are still translating.
+const TRANSLATION_BATCH_SIZE = 30
+const TRANSLATION_CONCURRENCY = 3
+
+async function commitTranslatedSegments(
+  tabId: number,
+  identity: { bvid: string; cid: string },
+  segments: BilibiliSubtitleSegment[],
+  translations: readonly string[],
+): Promise<void> {
+  const annotated = segments.map((segment, index) => {
+    const zh = translations[index]
+    return zh === undefined || zh === '' ? segment : { ...segment, zh }
+  })
+  await tabOperations.run(tabId, async () => {
+    const state = await readState(tabId)
+    if (state?.context.kind !== 'vod'
+      || state.context.identity.bvid !== identity.bvid
+      || state.context.identity.cid !== identity.cid
+      || state.subtitleSource !== 'bilibili'
+      || state.subtitleIdentity?.bvid !== identity.bvid
+      || state.subtitleIdentity.cid !== identity.cid) return
+    if ((state.subtitleSegments?.length ?? 0) !== segments.length) return
+    const next: MomentQTabState = { ...state, subtitleSegments: annotated.slice(-5000) }
+    await writeState(tabId, next)
+    publishState(tabId, next)
+  })
+}
+
+/**
+ * Machine-translate a non-Chinese Bilibili track into Simplified Chinese
+ * using the user's model key. Display-only: the durable transcript keeps the
+ * original text, and a missing key or a failed batch simply leaves those
+ * lines untranslated.
+ */
+async function enrichWithChineseTranslation(
+  tabId: number,
+  identity: { bvid: string; cid: string },
+  segments: BilibiliSubtitleSegment[],
+): Promise<void> {
+  if (!trackNeedsChineseTranslation(segments)) return
+  const apiKey = await loadModelApiKey().catch(() => '')
+  if (apiKey === '') return
+  const translations = new Array<string>(segments.length).fill('')
+  let cursor = 0
+  const worker = async (): Promise<void> => {
+    while (cursor < segments.length) {
+      const start = cursor
+      cursor += TRANSLATION_BATCH_SIZE
+      const slice = segments.slice(start, start + TRANSLATION_BATCH_SIZE)
+      try {
+        const batch = await translateSubtitleBatch(slice.map(segment => segment.text), apiKey)
+        batch.forEach((text, offset) => { translations[start + offset] = text })
+        await commitTranslatedSegments(tabId, identity, segments, translations)
+      } catch {
+        // One failed batch leaves its lines untranslated; later batches continue.
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: TRANSLATION_CONCURRENCY }, worker))
+}
+
 /** Page-world track import; network runs outside the per-tab queue. */
-async function syncPageSubtitleTracks(tabId: number, message: PageSubtitleTracksMessageEnvelope): Promise<void> {
-  const state = await readState(tabId)
+async function syncPageSubtitleTracks(tabId: number, message: PageSubtitleTracksMessageEnvelope): Promise<void> {  const state = await readState(tabId)
   if (state?.context.kind !== 'vod'
     || state.context.identity.bvid !== message.payload.bvid
     || state.context.identity.cid !== message.payload.cid) return
@@ -478,6 +543,10 @@ async function syncPageSubtitleTracks(tabId: number, message: PageSubtitleTracks
       }
       await writeState(tabId, next)
       publishState(tabId, next)
+      void enrichWithChineseTranslation(tabId, {
+        bvid: message.payload.bvid,
+        cid: message.payload.cid,
+      }, segments as BilibiliSubtitleSegment[])
     })
     return
   }

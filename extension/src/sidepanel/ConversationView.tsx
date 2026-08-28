@@ -121,11 +121,19 @@ function SubtitleTicker({ state, playbackTime }: { state: MomentQTabState | null
           const segmentIndex = start + visibleIndex
           const distance = index - segmentIndex + previewOffset
           const active = previewOffset === 0 && distance === 0
+          const zh = segment.zh !== undefined && segment.zh !== '' ? segment.zh : undefined
           return <div
             key={`${segment.start}-${segment.end}-${segment.text}`}
             className={`momentq-subtitle-line${active ? ' is-current' : ''}`}
             style={{ opacity: active ? 1 : distance <= historyRows ? Math.max(0.2, 0.78 - distance * 0.14) : 0 }}
-          >{segment.text}</div>
+          >
+            {zh === undefined ? segment.text : (
+              <>
+                <span className="momentq-subtitle-zh">{zh}</span>
+                <span className="momentq-subtitle-original">{segment.text}</span>
+              </>
+            )}
+          </div>
         })}
         {previewOffset === 1 && (
           <div

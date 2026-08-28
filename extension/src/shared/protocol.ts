@@ -61,6 +61,8 @@ export type BilibiliSubtitleSegment = {
   start: number
   end: number
   text: string
+  /** Optional Simplified-Chinese machine translation, display only. */
+  zh?: string
 }
 // Structural match of the Host's TranscriptSegment: both Bilibili subtitle
 // imports (source "bilibili") and future ASR output (source "asr") persist the

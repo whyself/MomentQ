@@ -18,6 +18,7 @@
     "https://subtitle.bilibili.com/*",
     "https://*.biliapi.com/*",
     "https://*.hdslb.com/*",
+    "https://api.deepseek.com/*",
     "http://127.0.0.1/*",
     "http://localhost/*"
   ],
