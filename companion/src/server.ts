@@ -12,6 +12,10 @@ export type CompanionServerHandle = {
   close: () => Promise<void>
 }
 
+function log(event: string): void {
+  console.log(`[momentq-companion] ${new Date().toISOString().slice(11, 23)} ${event}`)
+}
+
 const MAX_FRAME_BYTES = 64 * 1024
 const MAX_CONFIG_BODY_BYTES = 16 * 1024
 
@@ -170,7 +174,16 @@ export async function startCompanionServer(
   const webSocketServer = new WebSocketServer({ server, maxPayload: MAX_FRAME_BYTES })
 
   webSocketServer.on('connection', (socket: WebSocket) => {
+    log('extension WebSocket 已连接')
     let session: AsrSession | undefined
+    socket.on('close', () => {
+      log('extension WebSocket 已断开')
+      void session?.stop()
+    })
+    socket.on('error', () => {
+      log('extension WebSocket 错误')
+      void session?.stop()
+    })
     socket.on('message', (data: WebSocket.RawData, isBinary: boolean) => {
       if (isBinary) {
         void session?.feedAudio(Buffer.from(data as ArrayBuffer))
@@ -189,7 +202,9 @@ export async function startCompanionServer(
       }
       if (message.type === 'start') {
         if (session !== undefined) return
+        log(`收到 start（${message.identity.kind}）`)
         if (!baiduConfigured(config.baidu)) {
+          log('拒绝：百度凭据缺失（provider-not-configured）')
           socket.send(JSON.stringify({
             type: 'error',
             code: 'provider-not-configured',
@@ -219,8 +234,6 @@ export async function startCompanionServer(
       }
       if (session !== undefined) void session.handleClientMessage(message)
     })
-    socket.on('close', () => { void session?.stop() })
-    socket.on('error', () => { void session?.stop() })
   })
 
   return new Promise((resolve, reject) => {

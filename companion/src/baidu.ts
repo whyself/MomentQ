@@ -48,9 +48,15 @@ export async function fetchBaiduAccessToken(
   if (cached !== undefined && now() < cached.expiresAtMs) return cached.accessToken
   const url = `${TOKEN_URL}?grant_type=client_credentials&client_id=${encodeURIComponent(config.apiKey)}&client_secret=${encodeURIComponent(config.secretKey)}`
   const response = await fetcher(url)
-  if (!response.ok) throw new Error(`Baidu token request failed with status ${response.status}`)
-  const payload = (await response.json()) as { access_token?: unknown; expires_in?: unknown }
+  if (!response.ok) {
+    const body = await response.text().catch(() => '')
+    console.error(`[momentq-companion] 百度 token 请求失败 HTTP ${response.status}：${body.slice(0, 300)}`)
+    throw new Error(`Baidu token request failed with status ${response.status}`)
+  }
+  const payload = (await response.json()) as { access_token?: unknown; expires_in?: unknown; error?: unknown; error_description?: unknown }
   if (typeof payload.access_token !== 'string' || payload.access_token === '') {
+    console.error('[momentq-companion] 百度 token 响应无 access_token：',
+      `${String(payload.error ?? '?')} ${String(payload.error_description ?? '')}`.slice(0, 300))
     throw new Error('Baidu token response has no access_token')
   }
   const expiresIn = typeof payload.expires_in === 'number' && Number.isFinite(payload.expires_in)

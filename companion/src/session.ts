@@ -108,6 +108,7 @@ export class AsrSession {
 
   private async connectStream(): Promise<void> {
     try {
+      console.log(`[momentq-companion] ${new Date().toISOString().slice(11, 23)} 连接百度实时 ASR…`)
       const stream = await openBaiduStream(this.dependencies.baidu, {
         onEvent: event => this.handleUpstreamEvent(event),
         onError: () => this.handleUpstreamFailure(),
@@ -116,6 +117,7 @@ export class AsrSession {
         now: this.dependencies.now,
         socketFactory: this.dependencies.socketFactory,
       })
+      console.log(`[momentq-companion] ${new Date().toISOString().slice(11, 23)} 百度实时 ASR 已连接`)
       if (this.stopped) {
         await stream.cancel()
         return
@@ -123,6 +125,8 @@ export class AsrSession {
       this.stream = stream
       for (const chunk of this.audioQueue.splice(0)) stream.sendAudio(chunk)
     } catch (error) {
+      console.error(`[momentq-companion] ${new Date().toISOString().slice(11, 23)} 百度连接失败：`,
+        error instanceof Error ? error.message : error)
       // Leave the session alive: the extension keeps streaming and the next
       // frame retries the connection instead of killing the whole capture.
       this.callbacks.send({
