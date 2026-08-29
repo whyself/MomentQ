@@ -237,48 +237,38 @@ async function publishSubtitle(snapshot: BilibiliPageSnapshot): Promise<void> {
   const controller = new AbortController()
   subtitleRequest = controller
   try {
-    // The WBI endpoint is what current Bilibili pages use for AI/native
-    // subtitles. Keep the legacy endpoint as a compatibility fallback.
-    let definitiveEmpty = false
-    for (const endpoint of ['x/player/wbi/v2', 'x/player/v2']) {
-      // The momentq_probe marker lets the network tap tell this unsigned
-      // self-query apart from the player's own requests to the same
-      // endpoints; without it the tap adopted the poisoned unsigned list
-      // as if the player had served it.
-      const indexResponse = await pageFetch(
-        `https://api.bilibili.com/${endpoint}?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(String(cid))}&momentq_probe=1`,
-        { credentials: 'include', signal: controller.signal },
-      )
-      if (!indexResponse.ok) continue
+    // Only the WBI endpoint is probed. The legacy player endpoint is where
+    // logged-in responses for trackless videos carried Bilibili's rotating
+    // foreign tracks (measured 2026-08-29), disguised as ai_type=0
+    // official tracks — no list-level filter can tell them from real ones.
+    // The momentq_probe marker lets the network tap tell this unsigned
+    // self-query apart from the player's own requests to the same
+    // endpoints; without it the tap adopted the poisoned unsigned list
+    // as if the player had served it.
+    const indexResponse = await pageFetch(
+      `https://api.bilibili.com/x/player/wbi/v2?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(String(cid))}&momentq_probe=1`,
+      { credentials: 'include', signal: controller.signal },
+    )
+    if (indexResponse.ok) {
       const payload = await indexResponse.json()
       const index = parseSubtitleIndex(payload)
       // The response body, not the request URL or current DOM, owns its
       // identity. Bilibili can resolve a navigation/preload request late.
-      if (index === null || index.bvid !== bvid || index.cid !== String(cid)) continue
-      // This page-world query is unsigned like the background's; its AI
-      // tracks may be poisoned server-side, so only official tracks post
-      // from here. Player-signed AI tracks arrive via the network tap.
-      const officialTracks = subtitleTracks(payload, true)
-      if (officialTracks.length > 0) {
-        postSubtitleTracks(snapshot, officialTracks, 'probe')
-        return
+      if (index !== null && index.bvid === bvid && index.cid === String(cid)) {
+        // This page-world query is unsigned like the background's; its AI
+        // tracks may be poisoned server-side, so only official tracks post
+        // from here. Player-signed AI tracks arrive via the network tap.
+        const officialTracks = subtitleTracks(payload, true)
+        if (officialTracks.length > 0) {
+          postSubtitleTracks(snapshot, officialTracks, 'probe')
+        } else if (index.tracks.length > 0) {
+          // AI-only via the unsigned channel: nothing trusted to import; keep
+          // the request key unset so later player observations can still post.
+        } else if (index.definitiveEmpty) {
+          postSubtitleTracks(snapshot, [], 'probe', 'absent')
+        }
       }
-      if (index.tracks.length > 0) {
-        // AI-only via the unsigned channel: nothing trusted to import; keep
-        // the request key unset so later player observations can still post.
-        return
-      }
-      definitiveEmpty ||= index.definitiveEmpty
     }
-
-    // NOTE: there is deliberately no "subtitle-web" (protobuf) discovery
-    // here. Its responses carry no video identity, so whatever it returns can
-    // never be attributed to this bvid/cid — and mis-keyed probes imported
-    // completely unrelated videos' AI tracks. Tracks are only accepted from
-    // validated index responses and player responses whose payload identity
-    // matches the snapshot above; the player-menu auto-click makes Bilibili
-    // surface AI tracks through those verified paths.
-    if (definitiveEmpty) postSubtitleTracks(snapshot, [], 'probe', 'absent')
   } catch {
     // Navigation aborts and missing subtitle tracks are expected.
   } finally {
@@ -299,6 +289,12 @@ function installSubtitleNetworkTap(): void {
       // Our own unsigned probe rides the same fetch hook; only genuine
       // player requests are a trusted source for AI tracks.
       if (/momentq_probe/.test(raw)) return
+      // Legacy /x/player/v2 is the habitat of Bilibili's rotating foreign
+      // tracks (measured 2026-08-29: every poisoned response came from it;
+      // WBI stayed clean across both probe rounds). The WBI path
+      // ("/x/player/wbi/v2") does not contain this substring, so player
+      // track lists are trusted from WBI only.
+      if (raw.includes('/x/player/v2')) return
       void response.clone().json().then(payload => {
         const snapshot = readSnapshot()
         // Compare against the resolved identity when one exists: right after

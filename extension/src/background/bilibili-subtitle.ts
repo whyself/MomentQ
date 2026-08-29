@@ -19,43 +19,44 @@ export async function fetchBilibiliSubtitle(
   request: typeof fetch = globalThis.fetch.bind(globalThis),
 ): Promise<BilibiliSubtitleReport> {
   try {
-    // Current Bilibili players expose AI/native tracks through WBI first. The
-    // legacy endpoint remains a compatibility fallback for older pages.
-    const indexUrls = [
-      `https://api.bilibili.com/x/player/wbi/v2?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(cid)}`,
-      `https://api.bilibili.com/x/player/v2?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(cid)}`,
-    ]
+    // Only the WBI endpoint is queried. The legacy player endpoint is where
+    // logged-in responses for trackless videos carried Bilibili's rotating
+    // foreign tracks (measured 2026-08-29: every poisoned response came from
+    // it, WBI stayed clean across both probe rounds), so it is never trusted
+    // for track discovery on any channel.
     let definitiveEmpty = false
     let diagnostic: string | null = null
-    for (const indexUrl of indexUrls) {
-      // A stalled connection would park the whole pipeline forever; bound it.
-      const indexResponse = await request(indexUrl, { credentials: 'include', signal: AbortSignal.timeout(10_000) })
-      if (!indexResponse.ok) {
-        diagnostic = `索引 HTTP ${indexResponse.status}`
-        continue
-      }
+    // A stalled connection would park the whole pipeline forever; bound it.
+    const indexResponse = await request(
+      `https://api.bilibili.com/x/player/wbi/v2?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(cid)}`,
+      { credentials: 'include', signal: AbortSignal.timeout(10_000) },
+    )
+    if (indexResponse.ok) {
       const payload = await indexResponse.json()
       const index = parseSubtitleIndex(payload)
       // Identity is mandatory. A stale/cached player response must never be
       // relabelled as the requested video merely because its URL was current.
-      if (index === null || index.bvid !== bvid || index.cid !== cid) continue
-      // The extension's query is unsigned; its AI tracks can be poisoned
-      // server-side (translations attached to the wrong video). Only
-      // official tracks are trusted from this channel — AI tracks arrive
-      // through the player's own signed responses via the page tap.
-      const officialTracks = subtitleTracks(payload, true)
-      diagnostic = officialTracks.length > 0
-        ? `官方轨 ${officialTracks.length} 条`
-        : index.tracks.length > 0
-          ? `仅 AI 轨（未签名通道不导入）: ${index.trackLabels.slice(0, 3).join(', ')}`
-          : index.needLogin ? '无轨道（B 站提示字幕需登录生成）' : '无轨道'
-      for (const url of officialTracks) {
-        const response = await request(url, { credentials: 'include', signal: AbortSignal.timeout(10_000) })
-        if (!response.ok) continue
-        const segments = normalizeSubtitleBody(await response.json())
-        if (segments.length > 0) return { segments, definitiveEmpty: false, diagnostic: `${diagnostic}，已取到 ${segments.length} 行` }
+      if (index !== null && index.bvid === bvid && index.cid === cid) {
+        // The extension's query is unsigned; its AI tracks can be poisoned
+        // server-side (translations attached to the wrong video). Only
+        // official tracks are trusted from this channel — AI tracks arrive
+        // through the player's own signed responses via the page tap.
+        const officialTracks = subtitleTracks(payload, true)
+        diagnostic = officialTracks.length > 0
+          ? `官方轨 ${officialTracks.length} 条`
+          : index.tracks.length > 0
+            ? `仅 AI 轨（未签名通道不导入）: ${index.trackLabels.slice(0, 3).join(', ')}`
+            : index.needLogin ? '无轨道（B 站提示字幕需登录生成）' : '无轨道'
+        for (const url of officialTracks) {
+          const response = await request(url, { credentials: 'include', signal: AbortSignal.timeout(10_000) })
+          if (!response.ok) continue
+          const segments = normalizeSubtitleBody(await response.json())
+          if (segments.length > 0) return { segments, definitiveEmpty: false, diagnostic: `${diagnostic}，已取到 ${segments.length} 行` }
+        }
+        definitiveEmpty = index.definitiveEmpty
       }
-      definitiveEmpty ||= index.definitiveEmpty
+    } else {
+      diagnostic = `索引 HTTP ${indexResponse.status}`
     }
     return { segments: null, definitiveEmpty, diagnostic }
   } catch (error) {

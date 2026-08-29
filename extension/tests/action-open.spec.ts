@@ -80,6 +80,40 @@ describe('panel-open bridge recovery', () => {
     expect(source).toContain('no player-menu auto-click')
   })
 
+  it('trusts only the WBI index on every channel (legacy is the poison habitat)', async () => {
+    // 2026-08-29 logged-in probe: every rotating foreign track for trackless
+    // videos arrived from /x/player/v2 disguised as ai_type=0; WBI stayed
+    // clean in both rounds. Neither unsigned query may touch legacy, and the
+    // tap must reject legacy responses even when the player itself makes them.
+    const backgroundProbe = await readFile(join(import.meta.dirname, '..', 'src', 'background', 'bilibili-subtitle.ts'), 'utf8')
+    expect(backgroundProbe).not.toContain('/x/player/v2')
+    const bridge = await readFile(join(import.meta.dirname, '..', 'src', 'content', 'page-bridge.ts'), 'utf8')
+    const probe = bridge.slice(
+      bridge.indexOf('async function publishSubtitle'),
+      bridge.indexOf('function installSubtitleNetworkTap'),
+    )
+    expect(probe).not.toContain('x/player/v2')
+    const tap = bridge.slice(bridge.indexOf('function installSubtitleNetworkTap'))
+    expect(tap).toContain("raw.includes('/x/player/v2')")
+  })
+
+  it('vetoes every late import once WBI proves an identity trackless', async () => {
+    const background = await readFile(join(import.meta.dirname, '..', 'src', 'background', 'index.ts'), 'utf8')
+    // Short poison tracks (measured: 137s inside a 464s host) physically fit
+    // the host video, so the duration gate alone cannot catch them. A WBI
+    // definitive empty must veto all later imports from any channel.
+    expect(background).toContain('const provenTracklessIdentities = new Set<string>()')
+    const sync = background.slice(background.indexOf('async function syncBilibiliSubtitle'))
+    expect(sync).toContain('provenTracklessIdentities.add(verifyKey)')
+    const pageTracks = background.slice(background.indexOf('async function syncPageSubtitleTracks'))
+    expect(pageTracks).toContain('provenTracklessIdentities.has(')
+    // The veto runs before ownership checks: even a live ASR session must not
+    // let a poison track in, and its diagnostic names the rejecting channel.
+    expect(pageTracks.indexOf('provenTracklessIdentities.has('))
+      .toBeLessThan(pageTracks.indexOf("state.transcription !== 'inactive'"))
+    expect(pageTracks).toContain('已否决迟到的串台轨')
+  })
+
   it('never drops a failed capture start silently from the panel', async () => {
     const app = await readFile(join(import.meta.dirname, '..', 'src', 'sidepanel', 'App.tsx'), 'utf8')
     const toggle = app.slice(app.indexOf('function toggleTranscription'))

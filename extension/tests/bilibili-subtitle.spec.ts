@@ -103,6 +103,22 @@ describe('Bilibili subtitle acquisition', () => {
     })
   })
 
+  it('never queries the legacy player endpoint, even when WBI is empty', async () => {
+    const calls: string[] = []
+    const request: typeof fetch = async (input) => {
+      calls.push(String(input))
+      return new Response(JSON.stringify({
+        code: 0,
+        data: { bvid: 'BV1xx', cid: 42, need_login_subtitle: false, subtitle: { subtitles: [] } },
+      }), { status: 200 })
+    }
+    await fetchBilibiliSubtitle('BV1xx', '42', request)
+    // Every measured poisoned response (2026-08-29 probe, logged in) came
+    // from /x/player/v2; WBI stayed clean. The legacy endpoint must not be
+    // consulted at all on the unsigned channel.
+    expect(calls).toEqual(['https://api.bilibili.com/x/player/wbi/v2?bvid=BV1xx&cid=42'])
+  })
+
   it('never imports AI-only tracks through the unsigned channel', async () => {
     const request: typeof fetch = async (input) => {
       if (String(input).includes('/x/player/wbi/v2')) {
