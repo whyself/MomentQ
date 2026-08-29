@@ -125,3 +125,9 @@ body {
   mask-image: linear-gradient(to bottom, transparent 0, black 22%, black 100%);
 }
 
+/* Diagnostics render unmasked and centered. */
+.momentq-subtitle-ticker.momentq-subtitle-note {
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+

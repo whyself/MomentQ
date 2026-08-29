@@ -1,9 +1,18 @@
+import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
+const manifest = JSON.parse(readFileSync(resolve(import.meta.dirname, 'public/manifest.json'), 'utf8')) as { version: string }
+
 export default defineConfig({
   plugins: [react()],
+  // Baked into the side-panel bundle: comparing it against the running
+  // background's manifest version exposes a panel document that survived an
+  // extension reload and is still executing stale code.
+  define: {
+    __MOMENTQ_BUILD_VERSION__: JSON.stringify(manifest.version),
+  },
   resolve: {
     alias: {
       '@deepseek-ai/dsh-client-ui-primitives': resolve(import.meta.dirname, 'src/dsh/primitives.ts'),

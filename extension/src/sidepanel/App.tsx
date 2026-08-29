@@ -14,6 +14,8 @@ import '../vendor/deepseek-harness/packages/client/ui-theme/src/styles/design-pl
 import '../vendor/deepseek-harness/packages/client/ui-theme/src/styles/scrollbar.css'
 import '../vendor/deepseek-harness/packages/client/ui-theme/src/styles/gradient-shadow-text.css'
 
+declare const __MOMENTQ_BUILD_VERSION__: string
+
 export function App({ subscribe }: {
   subscribe: (publish: (state: MomentQTabState | null) => void) => () => void
 }) {
@@ -21,6 +23,32 @@ export function App({ subscribe }: {
   const [settings, setSettings] = useState<ExtensionSettings | null>(null)
   const [capturedFrame, setCapturedFrame] = useState<string | null>(null)
   const [playbackClock, setPlaybackClock] = useState<{ key: string; seconds: number } | null>(null)
+  // A reloaded extension keeps this panel document executing the previous
+  // build. Detect it by asking the live background for its manifest version:
+  // an unreachable background or a version mismatch means this document is
+  // stale and must be closed and reopened.
+  const [staleBuild, setStaleBuild] = useState(false)
+  useEffect(() => {
+    let active = true
+    const check = (): void => {
+      try {
+        void chrome.runtime.sendMessage({ type: 'MOMENTQ_PING' })
+          .then(reply => {
+            const version = (reply as { version?: unknown } | null)?.version
+            if (active) setStaleBuild(version !== __MOMENTQ_BUILD_VERSION__)
+          })
+          .catch(() => { if (active) setStaleBuild(true) })
+      } catch {
+        if (active) setStaleBuild(true)
+      }
+    }
+    check()
+    const timer = window.setInterval(check, 10_000)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+  }, [])
   const contentKey = state?.context.kind === 'vod'
     ? `${state.context.identity.bvid}:${state.context.identity.cid}`
     : null
@@ -61,6 +89,18 @@ export function App({ subscribe }: {
 
   const [asrConfigured, setAsrConfigured] = useState<boolean | null>(null)
   const [transcriptionNotice, setTranscriptionNotice] = useState<string | null>(null)
+  // A cold-starting service worker can drop the first message ("message
+  // channel closed before a response was received"); one retry after a beat
+  // rides out the load window.
+  const sendWithRetry = async (message: unknown): Promise<unknown> => {
+    try {
+      return await chrome.runtime.sendMessage(message)
+    } catch (error) {
+      if (!(error instanceof Error) || !/message channel closed/i.test(error.message)) throw error
+      await new Promise(resolve => setTimeout(resolve, 400))
+      return await chrome.runtime.sendMessage(message)
+    }
+  }
   useEffect(() => {
     if (settings === null) return
     let active = true
@@ -141,20 +181,20 @@ export function App({ subscribe }: {
             // Both forms refused. Falling back lets the background try and,
             // when it is rejected too, record the reason on the tab state —
             // the panel shows why.
-            await bounded(chrome.runtime.sendMessage({
+            await bounded(sendWithRetry({
               type: 'MOMENTQ_TOGGLE_TRANSCRIPTION',
               tabId: state.tabId,
             }))
             return
           }
-          await bounded(chrome.runtime.sendMessage({
+          await bounded(sendWithRetry({
             type: 'MOMENTQ_ASR_START_FROM_PANEL',
             tabId: state.tabId,
             streamId,
           }))
           return
         }
-        await bounded(chrome.runtime.sendMessage({
+        await bounded(sendWithRetry({
           type: 'MOMENTQ_TOGGLE_TRANSCRIPTION',
           tabId: state.tabId,
         }))
@@ -176,6 +216,16 @@ export function App({ subscribe }: {
 
   return (
     <main className="momentq-shell">
+      {staleBuild && (
+        <div className="momentq-stale-overlay" role="alert">
+          <div className="momentq-stale-card">
+            <div className="momentq-stale-title">扩展已更新</div>
+            <div className="momentq-stale-text">
+              此侧边栏仍在运行旧版本（面板 v{__MOMENTQ_BUILD_VERSION__}）。请关闭本侧边栏后重新打开。
+            </div>
+          </div>
+        </div>
+      )}
       <ConversationView
         state={state}
         capturedFrame={capturedFrame}

@@ -109,17 +109,19 @@ function SubtitleTicker({ state, playbackTime }: { state: MomentQTabState | null
     ? state.subtitleDiagnostic
     : undefined
   if (window === null && (preview === undefined || preview === '')) {
+    // The diagnostic gets its own unmasked container: the ticker's dissolve
+    // gradient would wash it out at this height.
     if (diagnostic !== undefined) {
       return (
-        <div className="momentq-subtitle-ticker" data-subtitle-diagnostic aria-live="off">
-          <div className="momentq-subtitle-line">{diagnostic}</div>
+        <div className="momentq-subtitle-ticker momentq-subtitle-note" data-subtitle-diagnostic aria-live="off">
+          {diagnostic}
         </div>
       )
     }
     if (segments.length > 0) {
       return (
-        <div className="momentq-subtitle-ticker" data-subtitle-diagnostic aria-live="off">
-          <div className="momentq-subtitle-line">字幕已就绪，等待页面播放时钟…</div>
+        <div className="momentq-subtitle-ticker momentq-subtitle-note" data-subtitle-diagnostic aria-live="off">
+          字幕已就绪，等待页面播放时钟…
         </div>
       )
     }

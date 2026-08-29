@@ -79,3 +79,14 @@
   align-items: center;
   padding-bottom: 10px;
 }
+
+/* Probe diagnostics occupy the subtitle slot but sit in their own unmasked,
+ * centered container — the ticker's dissolve gradient would fade them. */
+.momentq-subtitle-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12.5px;
+  opacity: 0.85;
+}

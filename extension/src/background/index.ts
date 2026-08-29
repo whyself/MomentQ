@@ -926,6 +926,13 @@ async function handleRequest(
 }
 
 chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
+  // Liveness + version probe for the side panel: a stale panel document that
+  // survived an extension reload compares this against its baked build
+  // version and tells the user to reopen the panel.
+  if (isRecord(message) && message.type === 'MOMENTQ_PING') {
+    sendResponse({ type: 'MOMENTQ_PONG', version: chrome.runtime.getManifest().version })
+    return false
+  }
   if (requestType(message) === null) return false
   void handleRequest(message, sender).then(sendResponse, () => sendResponse(null))
   return true
