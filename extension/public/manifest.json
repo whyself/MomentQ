@@ -2,14 +2,15 @@
   "manifest_version": 3,
   "name": "MomentQ（刻问）",
   "description": "使用当前 B 站视频或直播上下文向 MomentQ 提问。",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "permissions": [
     "sidePanel",
     "storage",
     "tabs",
     "tabCapture",
     "offscreen",
-    "scripting"
+    "scripting",
+    "contextMenus"
   ],
   "host_permissions": [
     "https://www.bilibili.com/*",

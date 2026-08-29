@@ -250,7 +250,7 @@ async function beginTranscription(tabId: number, streamId: string | undefined): 
       }
     }
     if (resolvedStreamId === undefined) {
-      throw new Error('浏览器拒绝音频采集（扩展未在当前页面被调用）。请点击浏览器工具栏上的 MomentQ 图标打开侧边栏后重试。')
+      throw new Error('浏览器要求先在当前页面调用一次扩展：请右键视频页面选择「MomentQ：开始/暂停语音转录」，或点击浏览器工具栏上的 MomentQ 图标后重试。')
     }
     // The content directory must exist before the companion persists rows.
     // Network stays outside the per-tab queue; the queued commit below only
@@ -1002,6 +1002,26 @@ async function configureSidePanel(): Promise<void> {
 
 void configureSidePanel()
 void restoreAsrSession().then(() => { void recoverOrphanedTranscription() })
+// A context-menu click is BOTH a user invocation and a gesture — the two
+// things chrome.tabCapture demands. The Edge sidebar pin never grants them,
+// which is why every panel-side start was rejected with "not invoked"; the
+// in-page menu is the reliable entry point on the video itself.
+chrome.contextMenus.removeAll().catch(() => {})
+chrome.contextMenus.create({
+  id: 'momentq-toggle-transcription',
+  title: 'MomentQ：开始/暂停语音转录',
+  contexts: ['page'],
+  documentUrlPatterns: ['https://www.bilibili.com/video/*'],
+}, () => void chrome.runtime.lastError)
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId !== 'momentq-toggle-transcription') return
+  const tabId = tab?.id
+  if (tabId === undefined) return
+  void toggleTranscription(tabId).then(state => {
+    const failure = state?.transcriptionError
+    if (failure !== undefined) reportDiagnostic(`菜单转录失败：${failure}`)
+  }).catch(() => {})
+})
 // AI subtitles generate lazily after the player first asks for them; keep
 // reconciling trackless video tabs so they appear without a page refresh.
 setInterval(() => { void reconcileVideoSubtitles() }, 30_000)

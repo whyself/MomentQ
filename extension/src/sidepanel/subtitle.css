@@ -86,7 +86,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  height: 100%;
   color: var(--dsw-alias-label-secondary);
   font-size: 12.5px;
+  text-align: center;
   opacity: 0.85;
 }

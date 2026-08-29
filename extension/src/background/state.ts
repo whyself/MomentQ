@@ -15,13 +15,28 @@ export class TabOperationQueue {
 
   run<T>(tabId: number, operation: () => Promise<T>): Promise<T> {
     const previous = this.tails.get(tabId) ?? Promise.resolve()
-    const result = previous.then(operation)
-    const tail = result.then(() => {}, () => {})
+    // A single wedged operation would otherwise park every later operation
+    // for the tab — clicks and imports would vanish without a trace. Bound
+    // each one: the queue never blocks behind a hung step for long.
+    const bounded = previous.then(() => new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`tab ${tabId} queued operation timed out`)), 10_000)
+      operation().then(
+        value => {
+          clearTimeout(timer)
+          resolve(value)
+        },
+        error => {
+          clearTimeout(timer)
+          reject(error)
+        },
+      )
+    }))
+    const tail = bounded.then(() => {}, () => {})
     this.tails.set(tabId, tail)
     void tail.then(() => {
       if (this.tails.get(tabId) === tail) this.tails.delete(tabId)
     })
-    return result
+    return bounded
   }
 }
 
