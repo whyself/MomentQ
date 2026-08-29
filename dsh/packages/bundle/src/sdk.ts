@@ -43,12 +43,15 @@ export class MomentQClientError extends Error {
 export interface MomentQClientOptions {
   baseUrl: string
   fetch?: typeof globalThis.fetch | undefined
+  /** Upper bound for each unary API call; a wedged Host turns into an error instead of a silent hang. */
+  timeoutMs?: number | undefined
 }
 
 /** Minimal SDK surface shared by the browser extension and test clients. */
 export class MomentQClient {
   private readonly baseUrl: string
   private readonly fetcher: typeof globalThis.fetch
+  private readonly timeoutMs: number
 
   constructor(options: MomentQClientOptions) {
     let parsed: URL
@@ -66,6 +69,7 @@ export class MomentQClient {
     this.baseUrl = parsed.toString().replace(/\/+$/, '')
     this.fetcher = options.fetch ?? globalThis.fetch?.bind(globalThis)
     if (this.fetcher === undefined) throw new Error('MomentQClient requires fetch')
+    this.timeoutMs = options.timeoutMs ?? 8_000
   }
 
   async ensureContent(request: EnsureContentRequest, signal?: AbortSignal): Promise<EnsureContentResult> {
@@ -174,11 +178,13 @@ export class MomentQClient {
   }
 
   private async call<T>(method: string, params: unknown, signal?: AbortSignal): Promise<T> {
+    const timeoutSignal = AbortSignal.timeout(this.timeoutMs)
+    const callSignal = signal === undefined ? timeoutSignal : AbortSignal.any([signal, timeoutSignal])
     const response = await this.fetcher(`${this.baseUrl}/momentq/api`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ method, params }),
-      ...(signal === undefined ? {} : { signal }),
+      signal: callSignal,
     })
     let envelope: unknown
     try {

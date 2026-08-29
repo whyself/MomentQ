@@ -183,20 +183,46 @@ async function deactivateTranscription(tabId: number, state: MomentQTabState, er
  * Start transcription with a tab-capture stream id. The side panel passes
  * one it obtained inside its own click handler (the reliable gesture
  * surface); other entry points let the background try, which some surfaces
- * reject without a user gesture.
+ * reject without a user gesture. The whole run is bounded: whatever hangs
+ * converts into a visible error state instead of a dead click.
  */
+const BEGIN_TIMEOUT_MS = 12_000
+const START_ACK_TIMEOUT_MS = 8_000
+let startAckTimer: ReturnType<typeof setTimeout> | undefined
+
+function armStartAckWatchdog(tabId: number): void {
+  if (startAckTimer !== undefined) clearTimeout(startAckTimer)
+  startAckTimer = setTimeout(() => {
+    startAckTimer = undefined
+    if (asrTabId !== tabId) return
+    // The offscreen never confirmed the session; ask it directly and
+    // surface the verdict instead of leaving the toggle 'active' forever.
+    void chrome.runtime.sendMessage({ type: 'MOMENTQ_ASR_QUERY' }).then(reply => {
+      const sessionTab = (reply as { tabId?: number } | null)?.tabId
+      if (asrTabId === tabId && sessionTab !== tabId) {
+        void tabOperations.run(tabId, async () => {
+          const state = await readState(tabId)
+          if (state === null || state.transcription === 'inactive') return
+          await deactivateTranscription(tabId, state, '采集会话未确认启动，请重试')
+        })
+      }
+    }).catch(() => {})
+  }, START_ACK_TIMEOUT_MS)
+}
+
 async function beginTranscription(tabId: number, streamId: string | undefined): Promise<MomentQTabState | null> {
   const initial = await readState(tabId)
   if (initial === null || initial.transcription !== 'inactive') return await readState(tabId)
   const ownedBySubtitles = initial.subtitleSource !== 'asr'
     && (initial.subtitleSegments?.length ?? 0) > 0
   if (ownedBySubtitles) return initial
-  try {
+  const run = async (): Promise<MomentQTabState | null> => {
     const settings = await loadSettings()
     const resolvedStreamId = streamId ?? await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId })
     // The content directory must exist before the companion persists rows.
     // Network stays outside the per-tab queue; the queued commit below only
-    // re-validates and writes local state.
+    // re-validates and writes local state. (MomentQClient bounds each call,
+    // so a wedged Host rejects instead of hanging the click.)
     const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
     await client.ensureContent({ identity: initial.context.identity, metadata: initial.context.metadata })
     await ensureOffscreenDocument()
@@ -227,18 +253,23 @@ async function beginTranscription(tabId: number, streamId: string | undefined): 
         identity: current.context.identity,
         companionBaseUrl: settings.companionBaseUrl,
       })
+      armStartAckWatchdog(tabId)
       return await readState(tabId)
     })
+  }
+  try {
+    return await Promise.race([
+      run(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('启动超时')), BEGIN_TIMEOUT_MS)),
+    ])
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
-    // A background-originated capture start (e.g. the page floating ball)
-    // can be rejected for lack of an extension-surface gesture; point the
-    // user at the side-panel button, which always has the gesture.
     const state = await readState(tabId) ?? initial
     return await tabOperations.run(tabId, () => deactivateTranscription(
       tabId,
       state,
-      `无法开始转录（${reason}）。请在 MomentQ 侧边栏点击开始转录按钮。`,
+      `无法开始转录（${reason}）。请重试或在 MomentQ 侧边栏再次点击。`,
     ))
   }
 }
@@ -298,6 +329,10 @@ async function applyAsrEvent(message: AsrEventMessage): Promise<void> {
 async function applyAsrSession(message: AsrSessionMessage): Promise<void> {
   if (message.tabId !== null) {
     asrTabId = message.tabId
+    if (startAckTimer !== undefined) {
+      clearTimeout(startAckTimer)
+      startAckTimer = undefined
+    }
     startClockPolling()
     return
   }
@@ -476,6 +511,11 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
     // Flow reaching here means a validated import or a definitive absence;
     // both reconcile the durable transcript.
     const segments = imported ?? []
+    // Surface the probe outcome before any Host dependency: a wedged Host
+    // must never suppress the panel diagnostic.
+    if (segments.length === 0) {
+      await writeProbeResult(tabId, bvid, cid, diagnostic ?? '无轨道')
+    }
     // ASR finals are this identity's transcript when the video has no
     // Bilibili track; a proven-empty probe must not erase them, durably or
     // from the panel. A real track still replaces them below.

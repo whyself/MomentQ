@@ -18,17 +18,22 @@ describe('MomentQ browser SDK', () => {
       }), { status: 200, headers: { 'content-type': 'application/json' } })
     })
     const client = new MomentQClient({ baseUrl: 'http://127.0.0.1:3080/', fetch: fetcher })
-    const signal = new AbortController().signal
+    const controller = new AbortController()
     await client.ensureContent({
       identity,
       metadata: { title: 'Title', creator: { name: 'Uploader' } },
-    }, signal)
+    }, controller.signal)
 
     expect(fetcher).toHaveBeenCalledWith('http://127.0.0.1:3080/momentq/api', expect.objectContaining({
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      signal,
     }))
+    // The caller's signal is combined with the per-call timeout: aborting
+    // it aborts the request signal too.
+    const requestSignal = seenInit?.signal
+    expect(requestSignal?.aborted).toBe(false)
+    controller.abort()
+    expect(requestSignal?.aborted).toBe(true)
     expect(JSON.parse(String(seenInit?.body))).toEqual({
       method: 'ensureContent',
       params: { identity, metadata: { title: 'Title', creator: { name: 'Uploader' } } },

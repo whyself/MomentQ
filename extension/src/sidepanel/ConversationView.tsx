@@ -326,13 +326,15 @@ function ConversationTranscript({ entries, pending, error }: {
   )
 }
 
-export function ConversationView({ state, capturedFrame, playbackTime, settings, asrConfigured, onCaptureFrame, onLoadHistory, onSubmit, onToggleTranscription }: {
+export function ConversationView({ state, capturedFrame, playbackTime, settings, asrConfigured, transcriptionNotice, onCaptureFrame, onLoadHistory, onSubmit, onToggleTranscription }: {
   state: MomentQTabState | null
   capturedFrame?: string | null
   playbackTime: number | undefined
   settings: ReactNode
   /** Tri-state from companion health: null = unknown/unreachable. */
   asrConfigured?: boolean | null
+  /** Panel-local feedback for transcription operations that never resolved. */
+  transcriptionNotice?: string | null
   onCaptureFrame: () => Promise<string | null>
   onLoadHistory: (state: MomentQTabState) => Promise<ConversationHistoryEntry[]>
   onSubmit: (
@@ -573,6 +575,11 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
           {state?.transcriptionError !== undefined && (
             <div className={chatCss.openError} role="alert" data-transcription-error>
               {state.transcriptionError}
+            </div>
+          )}
+          {transcriptionNotice !== null && transcriptionNotice !== undefined && (
+            <div className={chatCss.openError} role="alert" data-transcription-notice>
+              {transcriptionNotice}
             </div>
           )}
           <Composer

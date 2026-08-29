@@ -141,6 +141,14 @@ describe('panel-open bridge recovery', () => {
     const begin = background.slice(background.indexOf('async function beginTranscription'))
     expect(begin.indexOf('waitUntilOffscreenReady')).toBeLessThan(begin.indexOf("'MOMENTQ_ASR_START'"))
     expect(begin).toContain('音频采集管线未就绪')
+    // The whole start run is bounded and START carries an ack watchdog: a
+    // hang anywhere converts into a visible error, never a dead click.
+    expect(begin).toContain('BEGIN_TIMEOUT_MS')
+    expect(begin).toContain('armStartAckWatchdog')
+    // The panel races its own timeout and renders a local notice.
+    const app = await readFile(join(import.meta.dirname, '..', 'src', 'sidepanel', 'App.tsx'), 'utf8')
+    expect(app).toContain('面板等待后台响应超时')
+    expect(app).toContain('setTranscriptionNotice')
     // The offscreen answers MOMENTQ_ASR_QUERY in-band so the probe and the
     // worker-restart re-attach both observe it.
     const offscreen = await readFile(join(import.meta.dirname, '..', 'src', 'offscreen', 'index.ts'), 'utf8')

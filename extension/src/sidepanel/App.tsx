@@ -60,6 +60,7 @@ export function App({ subscribe }: {
   }, [])
 
   const [asrConfigured, setAsrConfigured] = useState<boolean | null>(null)
+  const [transcriptionNotice, setTranscriptionNotice] = useState<string | null>(null)
   useEffect(() => {
     if (settings === null) return
     let active = true
@@ -107,38 +108,49 @@ export function App({ subscribe }: {
   function toggleTranscription(): void {
     if (state === null) return
     void (async () => {
-      if (state.transcription === 'inactive') {
-        // chrome.tabCapture's user-gesture gate is satisfied inside this
-        // click handler on an extension surface; the background completes
-        // the pipeline with the handed-over stream id.
-        let streamId: string | null = null
-        try {
-          streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: state.tabId })
-        } catch {
-          streamId = null
-        }
-        if (streamId === null) {
-          // Chrome refused the panel-obtained stream id. Falling back lets
-          // the background try and, when it is rejected too, record the
-          // reason on the tab state — the panel shows why instead of the
-          // click vanishing without a trace.
-          await chrome.runtime.sendMessage({
-            type: 'MOMENTQ_TOGGLE_TRANSCRIPTION',
+      setTranscriptionNotice(null)
+      // Every start attempt is bounded on both ends: the background race
+      // rejects by 12s, and this panel-side race guarantees the click always
+      // resolves into either a state refresh or a visible notice.
+      const bounded = (promise: Promise<unknown>): Promise<unknown> => Promise.race([
+        promise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('面板等待后台响应超时')), 15_000)),
+      ])
+      try {
+        if (state.transcription === 'inactive') {
+          // chrome.tabCapture's user-gesture gate is satisfied inside this
+          // click handler on an extension surface; the background completes
+          // the pipeline with the handed-over stream id.
+          let streamId: string | null = null
+          try {
+            streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: state.tabId })
+          } catch {
+            streamId = null
+          }
+          if (streamId === null) {
+            // Chrome refused the panel-obtained stream id. Falling back lets
+            // the background try and, when it is rejected too, record the
+            // reason on the tab state — the panel shows why.
+            await bounded(chrome.runtime.sendMessage({
+              type: 'MOMENTQ_TOGGLE_TRANSCRIPTION',
+              tabId: state.tabId,
+            }))
+            return
+          }
+          await bounded(chrome.runtime.sendMessage({
+            type: 'MOMENTQ_ASR_START_FROM_PANEL',
             tabId: state.tabId,
-          }).catch(() => {})
+            streamId,
+          }))
           return
         }
-        await chrome.runtime.sendMessage({
-          type: 'MOMENTQ_ASR_START_FROM_PANEL',
+        await bounded(chrome.runtime.sendMessage({
+          type: 'MOMENTQ_TOGGLE_TRANSCRIPTION',
           tabId: state.tabId,
-          streamId,
-        }).catch(() => {})
-        return
+        }))
+      } catch (error) {
+        setTranscriptionNotice(`转录操作失败：${error instanceof Error ? error.message : String(error)}`)
       }
-      await chrome.runtime.sendMessage({
-        type: 'MOMENTQ_TOGGLE_TRANSCRIPTION',
-        tabId: state.tabId,
-      }).catch(() => {})
     })()
   }
 
@@ -163,6 +175,7 @@ export function App({ subscribe }: {
         onSubmit={submitMessage}
         {...(hasChromeRuntime ? { onToggleTranscription: toggleTranscription } : {})}
         {...(asrConfigured === null ? {} : { asrConfigured })}
+        transcriptionNotice={transcriptionNotice}
         settings={settings === null ? null : (
           <SettingsView settings={settings} onSettingsChange={setSettings} />
         )}
