@@ -99,7 +99,23 @@ function SubtitleTicker({ state, playbackTime }: { state: MomentQTabState | null
   const historyRows = 5
   const preview = state?.transcriptPreview?.trim()
   const window = selectSubtitleWindow(segments, playbackTime, historyRows)
+  // The probe diagnostic lives HERE, in the subtitle's own slot: the fixed
+  // footprint keeps it from moving anything above, and "无轨道" reads exactly
+  // where subtitles would appear.
+  const liveAsr = state?.transcription !== 'inactive'
+  const asrFinalsShown = state?.subtitleSource === 'asr' && segments.length > 0
+  const diagnostic = state?.context.kind === 'vod' && !liveAsr && !asrFinalsShown
+    && (!subtitleMatches || segments.length === 0)
+    ? state.subtitleDiagnostic
+    : undefined
   if (window === null && (preview === undefined || preview === '')) {
+    if (diagnostic !== undefined) {
+      return (
+        <div className="momentq-subtitle-ticker" data-subtitle-diagnostic aria-live="off">
+          <div className="momentq-subtitle-line">{diagnostic}</div>
+        </div>
+      )
+    }
     if (segments.length > 0) {
       return (
         <div className="momentq-subtitle-ticker" data-subtitle-diagnostic aria-live="off">
@@ -536,18 +552,6 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
     const timer = window.setTimeout(() => { setAsrWarningLatched(true) }, 3_000)
     return () => { window.clearTimeout(timer) }
   }, [asrUnconfigured])
-  // The probe diagnostic is hidden only while a live recognition session
-  // runs or ASR finals are on screen; a failed session left the 'asr'
-  // provenance with no finals, and that must not blank the panel.
-  const subtitleMatches = state?.context.kind === 'vod'
-    && state.subtitleIdentity?.bvid === state.context.identity.bvid
-    && state.subtitleIdentity.cid === state.context.identity.cid
-  const liveAsr = state?.transcription !== 'inactive'
-  const asrFinalsShown = state?.subtitleSource === 'asr' && (state?.subtitleSegments?.length ?? 0) > 0
-  const subtitleDiagnostic = state?.context.kind === 'vod' && !liveAsr && !asrFinalsShown
-    && (!subtitleMatches || (state.subtitleSegments?.length ?? 0) === 0)
-    ? state.subtitleDiagnostic
-    : undefined
   return (
     <section className={`momentq-conversation ${conversationCss.root}`} data-phase={active ? 'active' : 'hero'}>
       <ContextHeader
@@ -571,11 +575,6 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
         {transcriptionNotice !== null && transcriptionNotice !== undefined && (
           <div className={`momentq-top-warning ${chatCss.openError}`} role="alert" data-transcription-notice>
             {transcriptionNotice}
-          </div>
-        )}
-        {subtitleDiagnostic !== undefined && (
-          <div className="momentq-top-warning momentq-diagnostic-line" data-subtitle-diagnostic>
-            {subtitleDiagnostic}
           </div>
         )}
         <div className={conversationCss.viewArea}>
