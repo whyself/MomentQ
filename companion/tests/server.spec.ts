@@ -49,7 +49,8 @@ async function startHarness(overrides: {
   broadcastUpstream: (frame: unknown) => void
   close: () => Promise<void>
 }> {
-  // Fake Baidu upstream: performs the STARTED handshake and records frames.
+  // Fake Baidu upstream: official protocol — nothing is replied on START;
+  // recognition frames flow only as MID_TEXT/FIN_TEXT.
   const upstreamFrames: unknown[] = []
   let upstreamClients: WebSocket[] = []
   const upstream = await new Promise<WebSocketServer>((resolve) => {
@@ -60,7 +61,7 @@ async function startHarness(overrides: {
         if (isBinary) return
         const frame = JSON.parse(data.toString()) as unknown
         upstreamFrames.push(frame)
-        if ((frame as { type?: string }).type === 'START') socket.send(JSON.stringify({ type: 'STARTED' }))
+        void frame
       })
     })
     server.on('listening', () => resolve(server))
@@ -149,13 +150,11 @@ describe('companion ASR server', () => {
       const finalPromise = nextMessage()
       const persistedPromise = nextMessage()
       harness.broadcastUpstream({
-        type: 'PARTIAL_RESULT',
-        data: { err_no: 0, result_type: 'partial_result', result: { result: ' 部分结果' } },
+        type: 'MID_TEXT', err_no: 0, result: ' 部分结果',
       })
       expect(await partialPromise).toEqual({ type: 'partial', text: '部分结果' })
       harness.broadcastUpstream({
-        type: 'PARTIAL_RESULT',
-        data: { err_no: 0, result_type: 'final_result', result: { result: '完整句子' } },
+        type: 'FIN_TEXT', err_no: 0, result: '完整句子',
       })
       const final = await finalPromise
       expect(final.type).toBe('final')

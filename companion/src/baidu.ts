@@ -73,29 +73,44 @@ type IncomingFrame = { type?: unknown; data?: unknown }
 
 /** Parse one upstream JSON frame into a stream event, or undefined when ignorable. */
 export function parseBaiduFrame(raw: string): BaiduStreamEvent | { kind: 'error'; message: string } | undefined {
+  // Measured: the server frames carry a trailing newline that breaks a naive
+  // JSON.parse — strip whitespace first.
   let frame: IncomingFrame
   try {
-    frame = JSON.parse(raw) as IncomingFrame
+    frame = JSON.parse(raw.trim()) as IncomingFrame
   } catch {
     return undefined
   }
-  if (frame.type === 'STARTED') return { kind: 'started' }
-  if (frame.type === 'FINISHED') return { kind: 'finished' }
+  // Official realtime protocol: the server only ever sends MID_TEXT
+  // (interim), FIN_TEXT (final / error) and HEARTBEAT. There is no
+  // handshake-confirmation frame; "ready" is simply "START sent, audio
+  // flowing". (https://ai.baidu.com/ai-doc/SPEECH/jlbxejt2i)
   if (frame.type === 'HEARTBEAT') return undefined
-  if (frame.type === 'PARTIAL_RESULT') {
-    const data = frame.data as { err_no?: unknown; result_type?: unknown; result?: unknown } | undefined
-    if (data === null || typeof data !== 'object') return undefined
-    if (typeof data.err_no === 'number' && data.err_no !== 0) {
-      return { kind: 'error', message: `Baidu ASR error ${data.err_no}` }
+  if (frame.type === 'MID_TEXT' || frame.type === 'FIN_TEXT') {
+    const envelope = frame as { type?: unknown; err_no?: unknown; err_msg?: unknown; result?: unknown }
+    if (typeof envelope.err_no === 'number' && envelope.err_no !== 0) {
+      return { kind: 'error', message: `Baidu ASR error ${envelope.err_no}: ${String(envelope.err_msg ?? '')}`.trim() }
     }
-    const resolved = typeof data.result === 'object' && data.result !== null
-      ? (data.result as { result?: unknown }).result
-      : data.result
-    if (typeof resolved !== 'string' || resolved.trim() === '') return undefined
-    const text = resolved.trim()
-    return data.result_type === 'final_result' ? { kind: 'final', text } : { kind: 'partial', text }
+    const text = extractResultText(envelope.result)
+    if (text === '') return undefined
+    return envelope.type === 'FIN_TEXT' ? { kind: 'final', text } : { kind: 'partial', text }
   }
   return undefined
+}
+
+/** The result field is a plain string or a list of {src} fragments. */
+function extractResultText(result: unknown): string {
+  if (typeof result === 'string') return result.trim()
+  if (Array.isArray(result)) {
+    return result.map(item => {
+      if (typeof item === 'string') return item
+      if (typeof item === 'object' && item !== null && typeof (item as { src?: unknown }).src === 'string') {
+        return (item as { src: string }).src
+      }
+      return ''
+    }).join('').trim()
+  }
+  return ''
 }
 
 export type BaiduStream = {
@@ -157,31 +172,6 @@ export async function openBaiduStream(
     if (isBinary) return
     const event = parseBaiduFrame(data.toString())
     if (event === undefined) return
-    if (resolveStarted !== undefined) {
-      // Baidu's real rejection reason (bad appid, wrong dev_pid, quota…)
-      // arrives as an ErrMsg frame during the handshake — surface it instead
-      // of letting the timeout mask it.
-      if (event.kind === 'error') {
-        console.error(`[momentq-companion] 百度握手被拒：${event.message}`)
-        rejectStarted?.(new Error(`百度拒绝握手：${event.message}`))
-        resolveStarted = undefined
-        socket.close()
-        return
-      }
-      // Measured behavior on this dev_pid: STARTED never arrives; the first
-      // recognition frame does. Treat either as the handshake completing —
-      // gating on STARTED alone dropped real cues and starved the session.
-      if (event.kind === 'started' || event.kind === 'partial' || event.kind === 'final') {
-        console.log(`[momentq-companion] 百度会话就绪（${event.kind}，${now() - openedAt}ms）`)
-        resolveStarted()
-        resolveStarted = undefined
-        if (event.kind === 'started') return  // consumers ignore it
-        // partial/final fall through to the post-handshake routing below
-      } else {
-        console.log(`[momentq-companion] 百度握手帧：${data.toString().slice(0, 200)}`)
-        return
-      }
-    }
     if (event.kind === 'error') {
       callbacks.onError(new Error(event.message))
       return
@@ -191,11 +181,11 @@ export async function openBaiduStream(
   socket.on('error', (error: Error) => { callbacks.onError(error) })
 
   socket.on('open', () => {
-    console.log(`[momentq-companion] 已发送 START（devPid ${config.devPid}），等待确认…`)
+    console.log(`[momentq-companion] 已发送 START（devPid ${config.devPid}），音频即刻上行`)
     sendJson({
       type: 'START',
       data: {
-        appid: config.appId,
+        appid: Number(config.appId),
         appkey: config.apiKey,
         dev_pid: config.devPid,
         cuid: `momentq-${randomUUID()}`,
@@ -203,6 +193,11 @@ export async function openBaiduStream(
         sample: 16_000,
       },
     })
+    // Official protocol has no confirmation frame: readiness IS "START sent,
+    // audio flowing". Resolving here lets the queued audio ship immediately —
+    // the server drops the connection if no audio arrives within ~5s.
+    resolveStarted?.()
+    resolveStarted = undefined
   })
 
   await startedPromise

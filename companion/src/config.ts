@@ -41,7 +41,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): CompanionConfi
       ...(appId !== undefined && appId !== '' ? { appId } : {}),
       ...(apiKey !== undefined && apiKey !== '' ? { apiKey } : {}),
       ...(secretKey !== undefined && secretKey !== '' ? { secretKey } : {}),
-      devPid: port(env.BAIDU_ASR_DEV_PID, 80001),
+      devPid: port(env.BAIDU_ASR_DEV_PID, 15372),
     },
   }
 }
@@ -73,7 +73,7 @@ function storedCredentials(value: unknown): StoredBaiduCredentials | null {
     appId,
     apiKey,
     secretKey,
-    devPid: port(typeof record.devPid === 'number' ? String(record.devPid) : undefined, 80001),
+    devPid: port(typeof record.devPid === 'number' ? String(record.devPid) : undefined, 15372),
   }
 }
 

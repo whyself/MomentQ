@@ -12,7 +12,7 @@ import type {
   BilibiliContext,
 } from '../shared/protocol'
 import { isCompanionServerMessage } from '../../../shared/src/companion-protocol'
-import { floatToInt16, int16ToBuffer, isSilent, resampleLinear } from '../offscreen/pcm'
+import { floatToInt16, int16ToBuffer, resampleLinear } from '../offscreen/pcm'
 
 export type PanelSessionStart = {
   tabId: number
@@ -115,20 +115,31 @@ export async function startPanelSession(request: PanelSessionStart): Promise<voi
       identity: request.identity,
     }))
 
+    // Official pacing: 5120-byte (160ms) binary PCM frames shipped at 1x
+    // realtime, and NEVER withhold frames during silence — the server drops
+    // a connection that sees no audio for ~5s, so gating on silence kills
+    // paused/silent passages.
+    let sampleBuffer = new Float32Array(0)
     node.port.onmessage = (event: MessageEvent<Float32Array>) => {
       const chunk = event.data
-      if (chunk === undefined || isSilent(chunk)) return
-      if (context.sampleRate !== 16_000) {
-        // Defensive fallback when the context could not run at 16 kHz.
-        const resampled = resampleLinear(chunk, context.sampleRate, 16_000)
-        sendAudioFrame(socket, resampled)
-        return
+      if (chunk === undefined) return
+      const atRate = context.sampleRate !== 16_000
+        ? resampleLinear(chunk, context.sampleRate, 16_000)
+        : chunk
+      const merged = new Float32Array(sampleBuffer.length + atRate.length)
+      merged.set(sampleBuffer)
+      merged.set(atRate, sampleBuffer.length)
+      sampleBuffer = merged
+      const frameSamples = 2_560 // 160ms at 16kHz mono
+      while (sampleBuffer.length >= frameSamples) {
+        sendAudioFrame(socket, sampleBuffer.slice(0, frameSamples))
+        sampleBuffer = sampleBuffer.slice(frameSamples)
       }
-      sendAudioFrame(socket, chunk)
     }
     source.connect(node)
-    // The worklet is a sink; do not connect it to destination (that would
-    // echo tab audio back into the speakers).
+    // Tab capture diverts the tab's audio: reconnect it to the output so the
+    // user still hears the video while it is being transcribed.
+    source.connect(context.destination)
 
     session = { tabId: request.tabId, stream: captureStream, context, socket }
     postToBackground({ type: 'MOMENTQ_ASR_SESSION', tabId: request.tabId })

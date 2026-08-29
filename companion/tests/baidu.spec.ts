@@ -13,28 +13,24 @@ const config: BaiduStreamConfig = {
   appId: 'app',
   apiKey: 'key',
   secretKey: 'secret',
-  devPid: 80001,
+  devPid: 15372,
 }
 
 describe('parseBaiduFrame', () => {
-  it('parses started, partial, final and heartbeat frames', () => {
-    expect(parseBaiduFrame(JSON.stringify({ type: 'STARTED', data: {} }))).toEqual({ kind: 'started' })
-    expect(parseBaiduFrame(JSON.stringify({
-      type: 'PARTIAL_RESULT',
-      data: { err_no: 0, result_type: 'partial_result', result: { result: ' 你好' } },
-    }))).toEqual({ kind: 'partial', text: '你好' })
-    expect(parseBaiduFrame(JSON.stringify({
-      type: 'PARTIAL_RESULT',
-      data: { err_no: 0, result_type: 'final_result', result: { result: '你好世界。' } },
-    }))).toEqual({ kind: 'final', text: '你好世界。' })
+  it('parses MID_TEXT, FIN_TEXT and heartbeat frames per the official protocol', () => {
+    // The server only ever sends MID_TEXT/FIN_TEXT/HEARTBEAT; frames carry a
+    // trailing newline that must not break parsing.
+    expect(parseBaiduFrame(JSON.stringify({ type: 'MID_TEXT', err_no: 0, result: ' 你好' }) + '\n')).toEqual({ kind: 'partial', text: '你好' })
+    expect(parseBaiduFrame(JSON.stringify({ type: 'FIN_TEXT', err_no: 0, result: [{ src: '你好' }, { src: '世界。' }] }))).toEqual({ kind: 'final', text: '你好世界。' })
     expect(parseBaiduFrame(JSON.stringify({ type: 'HEARTBEAT' }))).toBeUndefined()
+    // There is no STARTED frame in the official protocol.
+    expect(parseBaiduFrame(JSON.stringify({ type: 'STARTED' }))).toBeUndefined()
   })
 
-  it('surfaces upstream error codes', () => {
+  it('surfaces upstream error codes from FIN_TEXT', () => {
     expect(parseBaiduFrame(JSON.stringify({
-      type: 'PARTIAL_RESULT',
-      data: { err_no: -3005, result: { result: '' } },
-    }))).toEqual({ kind: 'error', message: 'Baidu ASR error -3005' })
+      type: 'FIN_TEXT', err_no: -3005, err_msg: 'audio too long', result: '',
+    }))).toEqual({ kind: 'error', message: 'Baidu ASR error -3005: audio too long' })
   })
 })
 
@@ -72,7 +68,8 @@ describe('openBaiduStream', () => {
           if (isBinary) return
           const frame = JSON.parse(data.toString()) as unknown
           frames.push(frame)
-          if ((frame as { type?: string }).type === 'START') socket.send(JSON.stringify({ type: 'STARTED' }))
+          // Official protocol: the server acknowledges nothing on START —
+          // readiness is simply audio flowing.
         })
       })
       server.on('listening', () => {
@@ -99,12 +96,10 @@ describe('openBaiduStream', () => {
     await vi.waitFor(() => expect(upstream.frames.some(frame => (frame as { type?: string }).type === 'START')).toBe(true))
     const client = upstream.clients()[0]!
     client.send(JSON.stringify({
-      type: 'PARTIAL_RESULT',
-      data: { err_no: 0, result_type: 'partial_result', result: { result: ' 哈罗' } },
+      type: 'MID_TEXT', err_no: 0, result: ' 哈罗',
     }))
     client.send(JSON.stringify({
-      type: 'PARTIAL_RESULT',
-      data: { err_no: 0, result_type: 'final_result', result: { result: '哈罗世界' } },
+      type: 'FIN_TEXT', err_no: 0, result: '哈罗世界',
     }))
     await vi.waitFor(() => expect(events).toEqual([
       { kind: 'partial', text: '哈罗' },
