@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MomentQTabState } from '../shared/protocol'
 import { MomentQClient, type MessageStreamEvent, type SubmitMessageResult } from '../shared/host-client'
 import { fetchCompanionConfig } from '../shared/companion-client'
@@ -155,44 +155,14 @@ export function App({ subscribe }: {
     if (state === null) return
     void (async () => {
       setTranscriptionNotice(null)
-      // Every start attempt is bounded on both ends: the background race
-      // rejects by 12s, and this panel-side race guarantees the click always
-      // resolves into either a state refresh or a visible notice.
+      // Every start funnels through the background so state flips exactly
+      // once; the background then requests the capture here, where the id is
+      // both minted and consumed.
       const bounded = (promise: Promise<unknown>): Promise<unknown> => Promise.race([
         promise,
         new Promise((_, reject) => setTimeout(() => reject(new Error('面板等待后台响应超时')), 15_000)),
       ])
       try {
-        if (state.transcription === 'inactive') {
-          // The click is the gesture; the TARGETED form is the only one
-          // whose stream id survives the handoff to the offscreen consumer
-          // (the no-target id is bound to the calling context and dies in
-          // offscreen with "Error starting tab capture"). The targeted form
-          // additionally needs the extension invoked on this page — the
-          // context-menu entry or a toolbar-icon click grants that.
-          let streamId: string | null = null
-          try {
-            streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: state.tabId })
-          } catch {
-            streamId = null
-          }
-          if (streamId === null) {
-            // Let the background try with whatever invocation state exists
-            // and, when it is rejected too, record the reason on the tab
-            // state — the panel shows why.
-            await bounded(sendWithRetry({
-              type: 'MOMENTQ_TOGGLE_TRANSCRIPTION',
-              tabId: state.tabId,
-            }))
-            return
-          }
-          await bounded(sendWithRetry({
-            type: 'MOMENTQ_ASR_START_FROM_PANEL',
-            tabId: state.tabId,
-            streamId,
-          }))
-          return
-        }
         await bounded(sendWithRetry({
           type: 'MOMENTQ_TOGGLE_TRANSCRIPTION',
           tabId: state.tabId,
@@ -203,28 +173,51 @@ export function App({ subscribe }: {
     })()
   }
 
-  // Panel-run capture session lifecycle. The session lives in this document
-  // (Edge's offscreen cannot consume tab-capture streams); it confirms to the
-  // background via MOMENTQ_ASR_SESSION so the existing watchdog applies.
+  // Panel-run capture session lifecycle. On this Edge build a capture stream
+  // id is only consumable in the context that minted it, so the panel is the
+  // sole mint-and-consume surface: the background flips state and requests a
+  // start here; every entry (menu, shortcut, toolbar, panel button) funnels
+  // through that request. Confirms via MOMENTQ_ASR_SESSION (watchdog-covered).
+  const stateRef = useRef(state)
+  stateRef.current = state
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
   useEffect(() => {
-    const pending = new Map<number, { streamId: string; identity: import('../shared/protocol').BilibiliContext['identity'] }>()
-    const begin = async (tabId: number, streamId: string, identity: import('../shared/protocol').BilibiliContext['identity'], engine: 'baidu' | 'whisper'): Promise<void> => {
+    const beginPanelCapture = async (tabId: number): Promise<void> => {
+      const current = stateRef.current
+      const config = settingsRef.current
+      if (current === null) return
+      let streamId: string | null = null
       try {
-        const current = await loadSettings()
-        await startPanelSession({ tabId, streamId, identity, companionBaseUrl: current.companionBaseUrl, engine })
+        streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId })
+      } catch {
+        streamId = null
+      }
+      if (streamId === null) {
+        void chrome.runtime.sendMessage({
+          type: 'MOMENTQ_ASR_PANEL_CAPTURE_FAILED',
+          tabId,
+          message: '浏览器要求先在当前页面调用一次扩展：请右键视频页面选择「MomentQ：开始/暂停语音转录」、按 Alt+Shift+T，或点击浏览器工具栏图标后重试。',
+        }).catch(() => {})
+        return
+      }
+      try {
+        await startPanelSession({
+          tabId,
+          streamId,
+          identity: current.context.identity,
+          companionBaseUrl: config?.companionBaseUrl ?? 'http://127.0.0.1:3090',
+          engine: config?.asrProvider === 'whisper-local' ? 'whisper' : 'baidu',
+        })
       } catch {
         await stopPanelSession()
       }
     }
-    const listener = (message: unknown): false | undefined => {
+    const listener = (message: unknown): false => {
       if (typeof message !== 'object' || message === null) return false
-      const record = message as { type?: unknown; tabId?: unknown; streamId?: unknown; identity?: unknown; companionBaseUrl?: unknown; engine?: unknown }
-      if (record.type === 'MOMENTQ_ASR_START_PANEL_SESSION') {
-        if (typeof record.tabId === 'number' && typeof record.streamId === 'string'
-          && typeof record.identity === 'object' && record.identity !== null
-          && typeof record.companionBaseUrl === 'string') {
-          void begin(record.tabId, record.streamId, record.identity as import('../shared/protocol').BilibiliContext['identity'], record.engine === 'whisper' ? 'whisper' : 'baidu')
-        }
+      const record = message as { type?: unknown; tabId?: unknown }
+      if (record.type === 'MOMENTQ_ASR_REQUEST_START') {
+        if (typeof record.tabId === 'number') void beginPanelCapture(record.tabId)
         return false
       }
       if (record.type === 'MOMENTQ_ASR_PAUSE') {

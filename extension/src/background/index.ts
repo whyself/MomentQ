@@ -28,7 +28,7 @@ import { MomentQClient } from '../shared/host-client'
 import { loadSettings } from '../shared/settings-store'
 import { trackNeedsChineseTranslation, transcriptExceedsHost } from '../shared/bilibili-subtitle'
 
-type WorkerRequest = PageContextRuntimeMessage | ResolvePageSnapshotMessage | GetTabStateMessage | ToggleTranscriptionMessage | ToggleCurrentTranscriptionMessage | CaptureCurrentFrameMessage | GetCurrentVideoTimeMessage | PageSubtitleTracksMessageEnvelope | AsrStartFromPanelMessage | AsrEventMessage | AsrSessionMessage
+type WorkerRequest = PageContextRuntimeMessage | ResolvePageSnapshotMessage | GetTabStateMessage | ToggleTranscriptionMessage | ToggleCurrentTranscriptionMessage | CaptureCurrentFrameMessage | GetCurrentVideoTimeMessage | PageSubtitleTracksMessageEnvelope | AsrStartFromPanelMessage | AsrEventMessage | AsrSessionMessage | { type: 'MOMENTQ_ASR_PANEL_CAPTURE_FAILED'; tabId?: unknown; message?: unknown }
 
 const storageKey = (tabId: number) => `tab:${tabId}`
 // The queue serializes fast local state mutations only. Network calls never
@@ -78,7 +78,8 @@ function requestType(value: unknown): WorkerRequest['type'] | null {
       ? value.type
       : null
   }
-  if (value.type === 'MOMENTQ_ASR_EVENT' || value.type === 'MOMENTQ_ASR_SESSION') return value.type
+  if (value.type === 'MOMENTQ_ASR_EVENT' || value.type === 'MOMENTQ_ASR_SESSION'
+    || value.type === 'MOMENTQ_ASR_PANEL_CAPTURE_FAILED') return value.type
   return null
 }
 
@@ -226,7 +227,7 @@ function armStartAckWatchdog(tabId: number): void {
   }, START_ACK_TIMEOUT_MS)
 }
 
-async function beginTranscription(tabId: number, streamId: string | undefined): Promise<MomentQTabState | null> {
+async function beginTranscription(tabId: number, _streamId: string | undefined): Promise<MomentQTabState | null> {
   const initial = await readState(tabId)
   if (initial === null || initial.transcription !== 'inactive') return await readState(tabId)
   const ownedBySubtitles = initial.subtitleSource !== 'asr'
@@ -234,37 +235,17 @@ async function beginTranscription(tabId: number, streamId: string | undefined): 
   if (ownedBySubtitles) return initial
   const run = async (): Promise<MomentQTabState | null> => {
     const settings = await loadSettings()
-    // The offscreen document consumes the stream, so the streamId must come
-    // from the TARGETED form (the documented SW→offscreen pattern; requires
-    // the invocation that the context menu or toolbar click grants). The
-    // no-target form succeeds everywhere but its id is bound to the calling
-    // context and dies crossing into offscreen with "Error starting tab
-    // capture" — keep it strictly as a fallback.
-    let resolvedStreamId = streamId
-    if (resolvedStreamId === undefined) {
-      // Only the targeted form produces an id the offscreen consumer can
-      // use; without invocation it fails here with the actionable guidance.
-      try {
-        resolvedStreamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId })
-      } catch {
-        resolvedStreamId = undefined
-      }
-    }
-    if (resolvedStreamId === undefined) {
-      throw new Error('浏览器要求先在当前页面调用一次扩展：请右键视频页面选择「MomentQ：开始/暂停语音转录」、按 Alt+Shift+T，或点击浏览器工具栏上的 MomentQ 图标后重试。')
-    }
+    // On this Edge build a tab-capture stream id is only consumable in the
+    // context that minted it — background/offscreen-minted ids die in the
+    // panel with "Error starting tab capture" (measured across every
+    // combination). The background therefore never mints: it flips state and
+    // REQUESTS that the panel mint-and-consume under whichever invocation the
+    // user just exercised (menu/shortcut/toolbar all grant it).
     // The content directory must exist before the companion persists rows.
-    // Network stays outside the per-tab queue; the queued commit below only
-    // re-validates and writes local state. (MomentQClient bounds each call,
-    // so a wedged Host rejects instead of hanging the click.)
+    // (MomentQClient bounds each call, so a wedged Host rejects instead of
+    // hanging the click.)
     const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
     await client.ensureContent({ identity: initial.context.identity, metadata: initial.context.metadata })
-    await ensureOffscreenDocument()
-    // The START below is worthless if the offscreen page has not registered
-    // its listener yet; a dropped START looks exactly like a dead button.
-    if (!await waitUntilOffscreenReady()) {
-      throw new Error('音频采集管线未就绪，请重试')
-    }
     return await tabOperations.run(tabId, async () => {
       const current = await readState(tabId)
       if (current === null || current.transcription !== 'inactive') return await readState(tabId)
@@ -280,18 +261,11 @@ async function beginTranscription(tabId: number, streamId: string | undefined): 
       publishState(tabId, next)
       asrTabId = tabId
       startClockPolling()
-      // The capture session runs IN THE SIDE PANEL: Edge's offscreen document
-      // cannot consume tab-capture streams ("Error starting tab capture"),
-      // while the panel document is the context that both acquired the id and
-      // holds the user gesture. The panel confirms via MOMENTQ_ASR_SESSION,
-      // which the ack watchdog (and the QUERY responder in the panel) covers.
+      // The panel mints AND consumes the stream id in its own context; it
+      // confirms via MOMENTQ_ASR_SESSION, which the ack watchdog covers.
       void chrome.runtime.sendMessage({
-        type: 'MOMENTQ_ASR_START_PANEL_SESSION',
+        type: 'MOMENTQ_ASR_REQUEST_START',
         tabId,
-        streamId: resolvedStreamId,
-        identity: current.context.identity,
-        companionBaseUrl: settings.companionBaseUrl,
-        engine: settings.asrProvider === 'whisper-local' ? 'whisper' : 'baidu',
       }).catch(() => {})
       armStartAckWatchdog(tabId)
       return await readState(tabId)
@@ -844,6 +818,20 @@ async function handleRequest(
 
   if (type === 'MOMENTQ_ASR_SESSION') {
     await applyAsrSession(message as AsrSessionMessage)
+    return null
+  }
+
+  if (type === 'MOMENTQ_ASR_PANEL_CAPTURE_FAILED') {
+    const failure = message as { tabId?: unknown; message?: unknown }
+    const tabId = failure.tabId
+    if (typeof tabId === 'number' && Number.isSafeInteger(tabId)) {
+      await tabOperations.run(tabId, async () => {
+        const state = await readState(tabId)
+        if (state === null || state.transcription === 'inactive') return
+        await deactivateTranscription(tabId, state,
+          typeof failure.message === 'string' ? failure.message : '标签页采集启动失败')
+      })
+    }
     return null
   }
 
