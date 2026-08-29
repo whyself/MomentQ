@@ -13,6 +13,7 @@ export type BilibiliPageSnapshot = {
     pageNumber?: number
     pageCount?: number
     partTitle?: string
+    durationSeconds?: number
   }
   live?: {
     roomId?: string | number
@@ -33,6 +34,7 @@ export type BilibiliContext =
         title: string
         creator: { id?: string; name: string }
         part?: { number: number; title?: string }
+        durationSeconds?: number
       }
       url: string
     }
@@ -226,13 +228,14 @@ function isCreator(value: unknown): boolean {
 
 function isVodSnapshot(value: unknown): boolean {
   return isPlainRecord(value)
-    && hasOnlyKeys(value, ['bvid', 'aid', 'cid', 'pageNumber', 'pageCount', 'partTitle'])
+    && hasOnlyKeys(value, ['bvid', 'aid', 'cid', 'pageNumber', 'pageCount', 'partTitle', 'durationSeconds'])
     && isOptionalString(value, 'bvid')
     && isOptionalId(value, 'aid')
     && isOptionalId(value, 'cid')
     && isOptionalFiniteNumber(value, 'pageNumber')
     && isOptionalFiniteNumber(value, 'pageCount')
     && isOptionalString(value, 'partTitle')
+    && isOptionalFiniteNumber(value, 'durationSeconds')
 }
 
 function isLiveSnapshot(value: unknown): boolean {

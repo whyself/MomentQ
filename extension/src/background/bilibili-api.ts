@@ -28,13 +28,14 @@ function selectApiPage(
   pages: readonly unknown[],
   requestedPage: number | undefined,
   currentCid: string | number | undefined,
-): { cid?: string | number; pageNumber?: number; partTitle?: string } {
+): { cid?: string | number; pageNumber?: number; partTitle?: string; durationSeconds?: number } {
   const records = pages.map(record).filter(page => page !== null)
   const selected = requestedPage === undefined
     ? records.find(page => currentCid !== undefined && String(page.cid) === String(currentCid))
     : records.find(page => positiveInteger(page.page) === requestedPage)
   const pageNumber = positiveInteger(selected?.page) ?? requestedPage
   const partTitle = string(selected?.part)
+  const duration = positiveInteger(selected?.duration)
   const cid = selected === undefined && requestedPage !== undefined
     ? undefined
     : id(selected?.cid) ?? currentCid
@@ -42,6 +43,7 @@ function selectApiPage(
     ...(cid === undefined ? {} : { cid }),
     ...(pageNumber === undefined ? {} : { pageNumber }),
     ...(partTitle === undefined ? {} : { partTitle }),
+    ...(duration === undefined ? {} : { durationSeconds: duration }),
   }
 }
 
@@ -127,6 +129,7 @@ export function createBilibiliContextResolver(options: {
         ...(selected.pageNumber === undefined ? {} : { pageNumber: selected.pageNumber }),
         ...(pageCount === undefined ? {} : { pageCount }),
         ...(selected.partTitle === undefined ? {} : { partTitle: selected.partTitle }),
+        ...(selected.durationSeconds === undefined ? {} : { durationSeconds: selected.durationSeconds }),
       },
     })
     if (context === null) return null

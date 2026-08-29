@@ -125,7 +125,16 @@ export function normalizeBilibiliContext(snapshot: BilibiliPageSnapshot): Bilibi
     return {
       kind: 'vod',
       identity: { kind: 'vod', bvid: parsed.bvid, cid },
-      metadata: part ? { title, creator, part } : { title, creator },
+      metadata: {
+        title,
+        creator,
+        ...(part === undefined ? {} : { part }),
+        // Host duration feeds the timeline sanity gate on imported tracks.
+        ...(typeof snapshot.vod?.durationSeconds === 'number'
+          && Number.isFinite(snapshot.vod.durationSeconds) && snapshot.vod.durationSeconds > 0
+          ? { durationSeconds: Math.round(snapshot.vod.durationSeconds) }
+          : {}),
+      },
       url,
     }
   }

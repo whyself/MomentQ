@@ -144,6 +144,23 @@ export function trackNeedsChineseTranslation(
   return han / [...compact].length < 0.25
 }
 
+/**
+ * Timeline sanity gate. A track whose cues run past the host video's duration
+ * cannot belong to it — Bilibili's logged-in index occasionally serves a
+ * rotating foreign track for trackless videos under a perfectly valid
+ * identity, and duration overrun is the one physical impossibility that
+ * catches it (measured: poisoned tracks overrun 45%–374%; healthy tracks
+ * never exceed the host). Returns false when the duration is unknown.
+ */
+export function transcriptExceedsHost(
+  segments: readonly { start: number; end: number }[],
+  durationSeconds: number | undefined,
+): boolean {
+  if (durationSeconds === undefined || !Number.isFinite(durationSeconds) || durationSeconds <= 0) return false
+  const tolerance = Math.max(5, durationSeconds * 0.02)
+  return segments.some(segment => segment.end > durationSeconds + tolerance)
+}
+
 export function normalizeSubtitleBody(value: unknown): BilibiliSubtitleSegment[] {  const root = record(value)
   const data = record(root?.data)
   const subtitle = record(root?.subtitle)

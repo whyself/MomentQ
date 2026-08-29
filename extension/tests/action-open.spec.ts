@@ -65,7 +65,7 @@ describe('panel-open bridge recovery', () => {
     const sync = source.slice(source.indexOf('async function syncBilibiliSubtitle'))
     // A non-Chinese import must not be marked final: the lazy ai-zh track can
     // still replace it through the throttled retry and reconcile loops.
-    expect(sync).toContain('trackNeedsChineseTranslation(report.segments)')
+    expect(sync).toContain('trackNeedsChineseTranslation(segments)')
     const reconcile = source.slice(source.indexOf('async function reconcileVideoSubtitles'))
     expect(reconcile).toContain('trackNeedsChineseTranslation(segments)')
   })

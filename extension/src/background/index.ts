@@ -26,7 +26,7 @@ import { isCompanionServerMessage } from '../../../shared/src/companion-protocol
 import { fetchBilibiliSubtitle, fetchSubtitleTrackUrl } from './bilibili-subtitle'
 import { MomentQClient } from '../shared/host-client'
 import { loadSettings } from '../shared/settings-store'
-import { trackNeedsChineseTranslation } from '../shared/bilibili-subtitle'
+import { trackNeedsChineseTranslation, transcriptExceedsHost } from '../shared/bilibili-subtitle'
 
 type WorkerRequest = PageContextRuntimeMessage | ResolvePageSnapshotMessage | GetTabStateMessage | ToggleTranscriptionMessage | ToggleCurrentTranscriptionMessage | CaptureCurrentFrameMessage | GetCurrentVideoTimeMessage | PageSubtitleTracksMessageEnvelope | AsrStartFromPanelMessage | AsrEventMessage | AsrSessionMessage
 
@@ -420,11 +420,23 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
   if (previous !== undefined) return await previous
   const current = (async (): Promise<void> => {
     const report = await fetchBilibiliSubtitle(bvid, cid)
-    if (report.segments !== null && report.segments.length > 0) {
+    // Timeline sanity gate: a track running past the host video's duration
+    // is Bilibili's rotating foreign track for trackless videos — duration
+    // is the one identity check a mis-keyed track cannot fake. Reject and
+    // treat it like any other non-definitive outcome.
+    let imported = report.segments
+    let diagnostic = report.diagnostic
+    if (imported !== null && imported.length > 0
+      && transcriptExceedsHost(imported, context.metadata.durationSeconds)) {
+      const overrun = Math.max(...imported.map(segment => segment.end)).toFixed(0)
+      diagnostic = `轨时间轴 ${overrun}s 超过视频时长 ${context.metadata.durationSeconds ?? '?'}s，已拒绝（疑似串台轨）`
+      imported = null
+    }
+    if (imported !== null && imported.length > 0) {
       // Bilibili generates its "中文（自动翻译）" (ai-zh) track lazily. A
       // foreign track is imported now but stays retryable so the translated
       // track can replace it; a Chinese import is final.
-      if (trackNeedsChineseTranslation(report.segments)) {
+      if (trackNeedsChineseTranslation(imported)) {
         subtitleRetryNotBefore.set(verifyKey, Date.now() + SUBTITLE_RETRY_INTERVAL_MS)
       } else {
         verifiedSubtitleIdentities.add(verifyKey)
@@ -433,7 +445,7 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
       verifiedSubtitleIdentities.add(verifyKey)
     } else {
       subtitleRetryNotBefore.set(verifyKey, Date.now() + SUBTITLE_RETRY_INTERVAL_MS)
-      await writeProbeResult(tabId, bvid, cid, report.diagnostic ?? '无轨道')
+      await writeProbeResult(tabId, bvid, cid, diagnostic ?? '无轨道')
       // No trusted track from the unsigned channel: drop any previously
       // imported panel segments for this identity so poisoned tracks do not
       // linger in the display until the next rebind.
@@ -461,7 +473,9 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
     }
     const settings = await loadSettings()
     const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
-    const segments = report.segments ?? []
+    // Flow reaching here means a validated import or a definitive absence;
+    // both reconcile the durable transcript.
+    const segments = imported ?? []
     // ASR finals are this identity's transcript when the video has no
     // Bilibili track; a proven-empty probe must not erase them, durably or
     // from the panel. A real track still replaces them below.
@@ -500,7 +514,7 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
       }
       // No usable track: surface the probe result so a genuinely trackless
       // video is distinguishable from a broken fetch.
-      const probeNext: MomentQTabState = { ...state, subtitleDiagnostic: report.diagnostic ?? '无轨道' }
+      const probeNext: MomentQTabState = { ...state, subtitleDiagnostic: diagnostic ?? '无轨道' }
       await writeState(tabId, probeNext)
       publishState(tabId, probeNext)
       if (state.subtitleSource === 'asr' || state.transcription !== 'inactive') return
@@ -572,6 +586,9 @@ async function syncPageSubtitleTracks(tabId: number, message: PageSubtitleTracks
   for (const track of message.payload.tracks) {
     const segments = await fetchSubtitleTrackUrl(track)
     if (segments === null) continue
+    // Same timeline gate as the unsigned channel: even a player-served
+    // track cannot run past the host video's duration.
+    if (transcriptExceedsHost(segments, state.context.metadata.durationSeconds)) continue
     await client.ensureContent({ identity: context.identity, metadata: context.metadata })
     await client.syncTranscript(context.identity, 'bilibili', segments)
     await tabOperations.run(tabId, async () => {

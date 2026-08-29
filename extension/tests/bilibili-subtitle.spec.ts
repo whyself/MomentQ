@@ -1,6 +1,27 @@
 import { describe, expect, it } from 'vitest'
 import { fetchBilibiliSubtitle } from '../src/background/bilibili-subtitle'
-import { parseSubtitleIndex, subtitleTracks, trackNeedsChineseTranslation } from '../src/shared/bilibili-subtitle'
+import { parseSubtitleIndex, subtitleTracks, trackNeedsChineseTranslation, transcriptExceedsHost } from '../src/shared/bilibili-subtitle'
+
+describe('timeline sanity gate', () => {
+  const cue = (end: number) => ({ start: 0, end, text: 'x' })
+
+  it('rejects tracks that run past the host duration', () => {
+    // Measured poison cases: 475.8s track on a 328s host, 289.2s on 61s.
+    expect(transcriptExceedsHost([cue(475.8)], 328)).toBe(true)
+    expect(transcriptExceedsHost([cue(289.2)], 61)).toBe(true)
+  })
+
+  it('accepts healthy tracks within tolerance', () => {
+    // Healthy corpus maximum ratio is exactly 1.0 (430.8s on a 431s host).
+    expect(transcriptExceedsHost([cue(430.8)], 431)).toBe(false)
+    expect(transcriptExceedsHost([cue(1521.7)], 1522)).toBe(false)
+  })
+
+  it('skips the gate when the duration is unknown', () => {
+    expect(transcriptExceedsHost([cue(9_999)], undefined)).toBe(false)
+    expect(transcriptExceedsHost([cue(9_999)], 0)).toBe(false)
+  })
+})
 
 const segment = (text: string) => ({ start: 0, end: 1, text })
 

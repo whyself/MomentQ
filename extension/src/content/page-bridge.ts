@@ -129,6 +129,9 @@ function vodSnapshot(initial: unknown, playInfo: unknown): BilibiliPageSnapshot 
       pageNumber: selectedPage.pageNumber,
       pageCount: stateSettled ? (pages.length > 0 ? pages.length : firstPositiveInteger(at(videoData, 'videos'))) : undefined,
       partTitle: selectedPage.partTitle,
+      // Same staleness domain as the other videoData fields (guarded above);
+      // feeds the imported-track timeline sanity check.
+      durationSeconds: stateSettled ? firstPositiveInteger(at(videoData, 'duration')) : undefined,
     }),
   }) as BilibiliPageSnapshot
 }
