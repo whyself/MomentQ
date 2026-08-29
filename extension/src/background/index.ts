@@ -41,12 +41,14 @@ const publishRevisions = new Map<number, number>()
 
 /** Record the latest subtitle-index probe outcome for the panel to show. */
 async function writeProbeResult(tabId: number, bvid: string, cid: string, diagnostic: string): Promise<void> {
+  // The build tag lets a screenshot prove which version produced the line.
+  const version = chrome.runtime.getManifest().version
   await tabOperations.run(tabId, async () => {
     const state = await readState(tabId)
     if (state?.context.kind !== 'vod'
       || state.context.identity.bvid !== bvid
       || state.context.identity.cid !== cid) return
-    const next: MomentQTabState = { ...state, subtitleDiagnostic: diagnostic }
+    const next: MomentQTabState = { ...state, subtitleDiagnostic: `v${version} · ${diagnostic}` }
     await writeState(tabId, next)
     publishState(tabId, next)
   })
@@ -441,7 +443,6 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
           || state.context.identity.bvid !== bvid
           || state.context.identity.cid !== cid) return
         if (state.subtitleSource !== 'bilibili' || state.transcription !== 'inactive') return
-        if (state.subtitleTrusted === true) return
         if ((state.subtitleSegments?.length ?? 0) === 0) return
         const {
           subtitleSegments: _segments,

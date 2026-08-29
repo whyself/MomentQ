@@ -304,7 +304,11 @@ function installSubtitleNetworkTap(): void {
         const payloadCid = firstId(at(payload, 'data', 'cid'))
         if ((payloadBvid !== undefined && payloadBvid !== target.bvid)
           || (payloadCid !== undefined && String(payloadCid) !== target.cid)) return
-        const tracks = subtitleTracks(payload)
+        // AI tracks are untrusted on every channel — server-side poisoning
+        // attaches translations of wrong audio under valid identities, and
+        // even the player's own signed response can carry one. Official
+        // tracks only; AI presence surfaces through the panel diagnostic.
+        const tracks = subtitleTracks(payload, true)
         if (tracks.length > 0) {
           postSubtitleTracks({ ...snapshot, vod: { ...snapshot.vod, bvid: target.bvid, cid: target.cid } }, tracks, 'player')
         }
