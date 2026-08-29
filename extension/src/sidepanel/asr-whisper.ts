@@ -26,13 +26,12 @@ export function ensureWhisper(onStatus: (status: string) => void): Promise<Whisp
     // wasm artifacts bundled under /ort (copied by scripts/copy-ort-assets).
     module.env.allowLocalModels = false
     module.env.backends.onnx.wasm.wasmPaths = chrome.runtime.getURL('ort/')
-    // Whisper's merged decoder under uniform q8 trips an ORT quantization
-    // bug ("Missing required scale ... weight_merged_0_scale"); the
-    // documented working split is a float encoder with a q4 merged decoder.
-    // Fall back to full fp32 if the hub lacks q4 artifacts for the revision.
-    const load = async (dtype: unknown): Promise<WhisperPipeline> =>
-      await module.pipeline('automatic-speech-recognition', 'onnx-community/whisper-base', {
-        ...(dtype as { dtype?: unknown }).dtype === undefined ? {} : { dtype: dtype as string | Record<string, string> },
+    // ORT creates the InferenceSession lazily at the FIRST inference, so a
+    // warm-up run on silence forces session creation here — where the dtype
+    // fallback below can actually catch quantization incompatibilities.
+    const load = async (dtype: string): Promise<WhisperPipeline> => {
+      const asr = await module.pipeline('automatic-speech-recognition', 'onnx-community/whisper-base', {
+        dtype,
         progress_callback: info => {
           if (info.status === 'progress' && typeof info.progress === 'number'
             && (info.file ?? '').endsWith('.onnx')) {
@@ -42,8 +41,11 @@ export function ensureWhisper(onStatus: (status: string) => void): Promise<Whisp
           }
         },
       })
+      await asr(new Float32Array(1_600), { language: 'zh', task: 'transcribe' })
+      return asr
+    }
     try {
-      return await load({ encoder_model: 'fp32', decoder_model_merged: 'q4' })
+      return await load('q8')
     } catch {
       return await load('fp32')
     }
