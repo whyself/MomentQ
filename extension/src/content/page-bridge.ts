@@ -201,7 +201,12 @@ let subtitleRequest: AbortController | undefined
 let pageFetch: typeof window.fetch = window.fetch.bind(window)
 let subtitleFetchHookInstalled = false
 
-function postSubtitleTracks(snapshot: BilibiliPageSnapshot, tracks: string[], status: 'available' | 'absent' = 'available'): void {
+function postSubtitleTracks(
+  snapshot: BilibiliPageSnapshot,
+  tracks: string[],
+  origin: 'player' | 'probe',
+  status: 'available' | 'absent' = 'available',
+): void {
   const bvid = snapshot.vod?.bvid
   const cid = snapshot.vod?.cid
   if (bvid === undefined || cid === undefined
@@ -209,7 +214,7 @@ function postSubtitleTracks(snapshot: BilibiliPageSnapshot, tracks: string[], st
     || (status === 'absent' && tracks.length !== 0)) return
   const envelope: PageSubtitleTracksMessageEnvelope = {
     source: 'momentq-page', version: 1, type: 'PAGE_SUBTITLE_TRACKS',
-    payload: { bvid, cid: String(cid), status, tracks },
+    payload: { bvid, cid: String(cid), status, tracks, origin },
   }
   window.postMessage(envelope, location.origin)
   // One explicit request per resolved content identity is sufficient. The
@@ -238,12 +243,22 @@ async function publishSubtitle(snapshot: BilibiliPageSnapshot): Promise<void> {
         { credentials: 'include', signal: controller.signal },
       )
       if (!indexResponse.ok) continue
-      const index = parseSubtitleIndex(await indexResponse.json())
+      const payload = await indexResponse.json()
+      const index = parseSubtitleIndex(payload)
       // The response body, not the request URL or current DOM, owns its
       // identity. Bilibili can resolve a navigation/preload request late.
       if (index === null || index.bvid !== bvid || index.cid !== String(cid)) continue
+      // This page-world query is unsigned like the background's; its AI
+      // tracks may be poisoned server-side, so only official tracks post
+      // from here. Player-signed AI tracks arrive via the network tap.
+      const officialTracks = subtitleTracks(payload, true)
+      if (officialTracks.length > 0) {
+        postSubtitleTracks(snapshot, officialTracks, 'probe')
+        return
+      }
       if (index.tracks.length > 0) {
-        postSubtitleTracks(snapshot, index.tracks)
+        // AI-only via the unsigned channel: nothing trusted to import; keep
+        // the request key unset so later player observations can still post.
         return
       }
       definitiveEmpty ||= index.definitiveEmpty
@@ -256,7 +271,7 @@ async function publishSubtitle(snapshot: BilibiliPageSnapshot): Promise<void> {
     // validated index responses and player responses whose payload identity
     // matches the snapshot above; the player-menu auto-click makes Bilibili
     // surface AI tracks through those verified paths.
-    if (definitiveEmpty) postSubtitleTracks(snapshot, [], 'absent')
+    if (definitiveEmpty) postSubtitleTracks(snapshot, [], 'probe', 'absent')
   } catch {
     // Navigation aborts and missing subtitle tracks are expected.
   } finally {
@@ -291,7 +306,7 @@ function installSubtitleNetworkTap(): void {
           || (payloadCid !== undefined && String(payloadCid) !== target.cid)) return
         const tracks = subtitleTracks(payload)
         if (tracks.length > 0) {
-          postSubtitleTracks({ ...snapshot, vod: { ...snapshot.vod, bvid: target.bvid, cid: target.cid } }, tracks)
+          postSubtitleTracks({ ...snapshot, vod: { ...snapshot.vod, bvid: target.bvid, cid: target.cid } }, tracks, 'player')
         }
       }).catch(() => {})
     }).catch(() => {})

@@ -58,7 +58,7 @@ describe('Bilibili subtitle acquisition', () => {
         { start: 1.5, end: 2.5, text: '第二行' },
       ],
       definitiveEmpty: false,
-      diagnostic: '轨道 2 条: en(English), zh-CN(中文)，已取到 2 行',
+      diagnostic: '官方轨 2 条，已取到 2 行',
     })
     expect(calls).toEqual([
       'https://api.bilibili.com/x/player/wbi/v2?bvid=BV1xx&cid=42',
@@ -79,6 +79,29 @@ describe('Bilibili subtitle acquisition', () => {
       segments: null,
       definitiveEmpty: true,
       diagnostic: '无轨道',
+    })
+  })
+
+  it('never imports AI-only tracks through the unsigned channel', async () => {
+    const request: typeof fetch = async (input) => {
+      if (String(input).includes('/x/player/wbi/v2')) {
+        return new Response(JSON.stringify({
+          code: 0,
+          data: {
+            bvid: 'BV1xx', cid: 42,
+            subtitle: { subtitles: [
+              // Poisoned server-side AI track from an unrelated video.
+              { lan: 'ai-zh', lan_doc: '中文（自动翻译）', ai_type: 1, subtitle_url: '//aisubtitle.hdslb.com/poison.json' },
+            ] },
+          },
+        }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ body: [{ from: 0, to: 1, content: '别的视频' }] }), { status: 200 })
+    }
+    await expect(fetchBilibiliSubtitle('BV1xx', '42', request)).resolves.toEqual({
+      segments: null,
+      definitiveEmpty: false,
+      diagnostic: '仅 AI 轨 1 条（未签名通道不导入，等待播放器确认）',
     })
   })
 

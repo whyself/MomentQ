@@ -1,5 +1,5 @@
 import type { TranscriptSegment } from '../shared/host-client'
-import { normalizeSubtitleBody, parseSubtitleIndex } from '../shared/bilibili-subtitle'
+import { normalizeSubtitleBody, parseSubtitleIndex, subtitleTracks } from '../shared/bilibili-subtitle'
 
 export type BilibiliSubtitleReport = {
   segments: TranscriptSegment[] | null
@@ -34,14 +34,22 @@ export async function fetchBilibiliSubtitle(
         diagnostic = `索引 HTTP ${indexResponse.status}`
         continue
       }
-      const index = parseSubtitleIndex(await indexResponse.json())
+      const payload = await indexResponse.json()
+      const index = parseSubtitleIndex(payload)
       // Identity is mandatory. A stale/cached player response must never be
       // relabelled as the requested video merely because its URL was current.
       if (index === null || index.bvid !== bvid || index.cid !== cid) continue
-      diagnostic = index.tracks.length > 0
-        ? `轨道 ${index.tracks.length} 条: ${index.trackLabels.slice(0, 4).join(', ')}`
-        : index.needLogin ? '无轨道（B 站提示字幕需登录生成）' : '无轨道'
-      for (const url of index.tracks) {
+      // The extension's query is unsigned; its AI tracks can be poisoned
+      // server-side (translations attached to the wrong video). Only
+      // official tracks are trusted from this channel — AI tracks arrive
+      // through the player's own signed responses via the page tap.
+      const officialTracks = subtitleTracks(payload, true)
+      diagnostic = officialTracks.length > 0
+        ? `官方轨 ${officialTracks.length} 条`
+        : index.tracks.length > 0
+          ? `仅 AI 轨 ${index.tracks.length} 条（未签名通道不导入，等待播放器确认）`
+          : index.needLogin ? '无轨道（B 站提示字幕需登录生成）' : '无轨道'
+      for (const url of officialTracks) {
         const response = await request(url, { credentials: 'include', signal: AbortSignal.timeout(10_000) })
         if (!response.ok) continue
         const segments = normalizeSubtitleBody(await response.json())

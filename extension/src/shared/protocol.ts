@@ -76,6 +76,8 @@ export type PageSubtitleTracksMessageEnvelope = {
     /** A validated index response either exposes tracks or proves absence. */
     status: 'available' | 'absent'
     tracks: string[]
+    /** 'player' = captured from the player's own signed response (AI tracks trusted); 'probe' = the page's unsigned query (official tracks only). */
+    origin?: 'player' | 'probe'
   }
 }
 
@@ -104,6 +106,8 @@ export type MomentQTabState = {
   subtitleIdentity?: { bvid: string; cid: string }
   /** Provenance of subtitleSegments; set to 'asr' while recognition owns it. */
   subtitleSource?: SubtitleSource
+  /** True when the displayed track came from the player's own signed response. */
+  subtitleTrusted?: boolean
   /** Last subtitle-index probe result, shown when the video shows no track. */
   subtitleDiagnostic?: string
   /** In-flight ASR partial sentence, display-only until a final lands. */
@@ -265,9 +269,12 @@ export function isPageSubtitleTracksMessageEnvelope(value: unknown): value is Pa
     && hasOnlyKeys(value, ['source', 'version', 'type', 'payload'])
     && value.source === 'momentq-page' && value.version === 1 && value.type === 'PAGE_SUBTITLE_TRACKS'
     && isPlainRecord(value.payload)
-    && hasOnlyKeys(value.payload, ['bvid', 'cid', 'status', 'tracks'])
+    && hasOnlyKeys(value.payload, ['bvid', 'cid', 'status', 'tracks', 'origin'])
     && typeof value.payload.bvid === 'string' && value.payload.bvid.trim() !== ''
     && typeof value.payload.cid === 'string' && value.payload.cid.trim() !== ''
+    && (value.payload.origin === undefined
+      || value.payload.origin === 'player'
+      || value.payload.origin === 'probe')
     && (value.payload.status === 'available' || value.payload.status === 'absent')
     && Array.isArray(value.payload.tracks)
     && ((value.payload.status === 'available' && value.payload.tracks.length > 0)

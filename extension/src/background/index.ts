@@ -432,6 +432,27 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
     } else {
       subtitleRetryNotBefore.set(verifyKey, Date.now() + SUBTITLE_RETRY_INTERVAL_MS)
       await writeProbeResult(tabId, bvid, cid, report.diagnostic ?? '无轨道')
+      // No trusted track from the unsigned channel: drop any previously
+      // imported panel segments for this identity so poisoned tracks do not
+      // linger in the display until the next rebind.
+      await tabOperations.run(tabId, async () => {
+        const state = await readState(tabId)
+        if (state?.context.kind !== 'vod'
+          || state.context.identity.bvid !== bvid
+          || state.context.identity.cid !== cid) return
+        if (state.subtitleSource !== 'bilibili' || state.transcription !== 'inactive') return
+        if (state.subtitleTrusted === true) return
+        if ((state.subtitleSegments?.length ?? 0) === 0) return
+        const {
+          subtitleSegments: _segments,
+          subtitleIdentity: _identity,
+          subtitleSource: _source,
+          ...withoutSubtitle
+        } = state
+        const next = { ...withoutSubtitle, transcription: 'inactive' as const }
+        await writeState(tabId, next)
+        publishState(tabId, next)
+      })
       return
     }
     const settings = await loadSettings()
@@ -569,6 +590,7 @@ async function syncPageSubtitleTracks(tabId: number, message: PageSubtitleTracks
         subtitleSource: 'bilibili' as const,
         subtitleSegments: segments.slice(-5000) as BilibiliSubtitleSegment[],
         subtitleIdentity: { bvid: message.payload.bvid, cid: message.payload.cid },
+        ...(message.payload.origin === 'player' ? { subtitleTrusted: true } : {}),
       }
       await writeState(tabId, next)
       publishState(tabId, next)

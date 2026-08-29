@@ -40,7 +40,7 @@ function subtitleScore(item: RecordValue): number {
   return (3 - rank) * 1_000 + official
 }
 
-export function subtitleTracks(value: unknown): string[] {
+export function subtitleTracks(value: unknown, officialOnly = false): string[] {
   const root = record(value)
   const data = record(root?.data)
   const videoData = record(root?.videoData)
@@ -55,9 +55,14 @@ export function subtitleTracks(value: unknown): string[] {
     record(videoData?.subtitle)?.list,
     record(videoData?.subtitle)?.body,
   ]
+  // Unsigned index queries (the extension's own fetch) can return poisoned
+  // AI tracks — translations the player never offers. Only human-authored
+  // tracks (ai_type absent or 0) are trusted from that channel; AI tracks
+  // must come from the player's own signed responses, which the tap sees.
   const tracks = candidates.flatMap(candidate => Array.isArray(candidate) ? candidate : [])
     .map(record)
     .filter((item): item is RecordValue => item !== null)
+    .filter(item => !officialOnly || item.ai_type === undefined || item.ai_type === 0)
   return tracks.sort((left, right) => {
     const score = subtitleScore(right) - subtitleScore(left)
     if (score !== 0) return score
