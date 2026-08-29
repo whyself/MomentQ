@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "MomentQ（刻问）",
   "description": "使用当前 B 站视频或直播上下文向 MomentQ 提问。",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "permissions": [
     "sidePanel",
     "storage",
@@ -77,5 +77,8 @@
       ],
       "run_at": "document_start"
     }
-  ]
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  }
 }
