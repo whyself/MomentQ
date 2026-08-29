@@ -443,6 +443,9 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
           || state.context.identity.bvid !== bvid
           || state.context.identity.cid !== cid) return
         if (state.subtitleSource !== 'bilibili' || state.transcription !== 'inactive') return
+        // Player-origin tracks (signed responses via the tap) are trusted;
+        // only unsigned-channel imports get dropped here.
+        if (state.subtitleTrusted === true) return
         if ((state.subtitleSegments?.length ?? 0) === 0) return
         const {
           subtitleSegments: _segments,

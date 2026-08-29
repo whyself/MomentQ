@@ -238,8 +238,12 @@ async function publishSubtitle(snapshot: BilibiliPageSnapshot): Promise<void> {
     // subtitles. Keep the legacy endpoint as a compatibility fallback.
     let definitiveEmpty = false
     for (const endpoint of ['x/player/wbi/v2', 'x/player/v2']) {
+      // The momentq_probe marker lets the network tap tell this unsigned
+      // self-query apart from the player's own requests to the same
+      // endpoints; without it the tap adopted the poisoned unsigned list
+      // as if the player had served it.
       const indexResponse = await pageFetch(
-        `https://api.bilibili.com/${endpoint}?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(String(cid))}`,
+        `https://api.bilibili.com/${endpoint}?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(String(cid))}&momentq_probe=1`,
         { credentials: 'include', signal: controller.signal },
       )
       if (!indexResponse.ok) continue
@@ -289,6 +293,9 @@ function installSubtitleNetworkTap(): void {
     promise.then(response => {
       const raw = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
       if (!/subtitle|subtitles|player\/(?:v2|wbi\/v2)/i.test(raw)) return
+      // Our own unsigned probe rides the same fetch hook; only genuine
+      // player requests are a trusted source for AI tracks.
+      if (/momentq_probe/.test(raw)) return
       void response.clone().json().then(payload => {
         const snapshot = readSnapshot()
         // Compare against the resolved identity when one exists: right after
@@ -304,11 +311,10 @@ function installSubtitleNetworkTap(): void {
         const payloadCid = firstId(at(payload, 'data', 'cid'))
         if ((payloadBvid !== undefined && payloadBvid !== target.bvid)
           || (payloadCid !== undefined && String(payloadCid) !== target.cid)) return
-        // AI tracks are untrusted on every channel — server-side poisoning
-        // attaches translations of wrong audio under valid identities, and
-        // even the player's own signed response can carry one. Official
-        // tracks only; AI presence surfaces through the panel diagnostic.
-        const tracks = subtitleTracks(payload, true)
+        // This is the player's own signed response: the only trusted
+        // source for AI tracks. The unsigned channel's lists can carry
+        // poisoned server-side tracks; those never reach this path.
+        const tracks = subtitleTracks(payload)
         if (tracks.length > 0) {
           postSubtitleTracks({ ...snapshot, vod: { ...snapshot.vod, bvid: target.bvid, cid: target.cid } }, tracks, 'player')
         }

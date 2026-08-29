@@ -101,7 +101,7 @@ describe('Bilibili subtitle acquisition', () => {
     await expect(fetchBilibiliSubtitle('BV1xx', '42', request)).resolves.toEqual({
       segments: null,
       definitiveEmpty: false,
-      diagnostic: '仅 AI 轨 1 条（未签名通道不导入，等待播放器确认）',
+      diagnostic: '仅 AI 轨（未签名通道不导入）: ai-zh(中文（自动翻译）)',
     })
   })
 

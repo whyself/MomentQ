@@ -35,29 +35,19 @@ function subtitleFingerprint(state: MomentQTabState | null): string {
 
 function Control({ state, onToggle }: { state: MomentQTabState | null; onToggle: () => void }) {
   if (state === null) return null
+  // Starting capture needs a gesture on an extension surface; the page ball
+  // can never satisfy it, so the ball only exists while a session runs
+  // (pause/resume). Starting lives on the side-panel button.
+  if (state.transcription === 'inactive') return null
   const active = state.transcription === 'active'
-  const source = state.subtitleSource
-  const hasSubtitle = state.context.kind === 'vod'
-    && state.subtitleIdentity?.bvid === state.context.identity.bvid
-    && state.subtitleIdentity.cid === state.context.identity.cid
-    && (state.subtitleSegments?.length ?? 0) > 0
-  const title = hasSubtitle && source === 'asr'
-    ? '实时字幕生成中'
-    : hasSubtitle
-      ? '已使用 B 站字幕，不需要语音转录'
-      : (active ? '暂停转录' : '开始转录')
+  const title = active ? '暂停转录' : '继续转录'
   return (
     <Button
       variant="toolbar"
       size="sm"
-      // One consistent tone: the disabled with-subtitle state sits at 0.4
-      // opacity, so the enabled state matches it instead of switching to a
-      // darker blob when subtitles are missing.
-      style={hasSubtitle ? undefined : { opacity: 0.4 }}
       aria-label={title}
       title={title}
       icon={active ? <IconPauseOutline16 size={16} /> : <IconPlayOutline16 size={16} />}
-      disabled={hasSubtitle}
       onClick={onToggle}
     />
   )

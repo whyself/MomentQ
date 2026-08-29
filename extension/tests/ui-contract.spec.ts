@@ -92,13 +92,15 @@ describe('DSH UI reuse contract', () => {
     expect(`${control}\n${content}`).not.toContain('sidePanel.open')
   })
 
-  it('drags the page control vertically and keeps one tone in both states', async () => {
+  it('drags the page control vertically and only offers pause/resume', async () => {
     const control = await source('content', 'transcription-control.tsx')
     expect(control).toContain('pointerdown')
     expect(control).toContain('sessionStorage')
-    // Enabled and with-subtitle (disabled) states render the same lightness.
-    expect(control).toContain('opacity: 0.4')
     expect(control).toContain('suppressClick')
+    // Starting needs an extension-surface gesture the page can never give,
+    // so the ball exists only while a session runs; starting lives on the
+    // side-panel button.
+    expect(control).toMatch(/'inactive'\) return null/)
     // A re-injected control must retire the pre-reload orphan instead of
     // mounting a second floating ball.
     expect(control).toContain("document.getElementById('momentq-transcription-control')?.remove()")

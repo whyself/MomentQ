@@ -47,7 +47,7 @@ export async function fetchBilibiliSubtitle(
       diagnostic = officialTracks.length > 0
         ? `官方轨 ${officialTracks.length} 条`
         : index.tracks.length > 0
-          ? `仅 AI 轨 ${index.tracks.length} 条（未签名通道不导入，等待播放器确认）`
+          ? `仅 AI 轨（未签名通道不导入）: ${index.trackLabels.slice(0, 3).join(', ')}`
           : index.needLogin ? '无轨道（B 站提示字幕需登录生成）' : '无轨道'
       for (const url of officialTracks) {
         const response = await request(url, { credentials: 'include', signal: AbortSignal.timeout(10_000) })
