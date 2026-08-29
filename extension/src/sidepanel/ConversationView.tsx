@@ -3,7 +3,7 @@ import { Button, FishLogo, IconCloseOutline16, IconPlusOutline16, IconSendOutlin
 import { IconPauseOutline16, IconPlayOutline16 } from '../vendor/deepseek-harness/packages/client/ui-primitives/src/icons/index.tsx'
 import modalCss from '../vendor/deepseek-harness/packages/client/ui-primitives/src/Modal.module.css'
 import type { ConversationHistoryEntry, MessageStreamEvent, SubmitMessageResult } from '../shared/host-client'
-import type { MomentQTabState } from '../shared/protocol'
+import type { BilibiliSubtitleSegment, MomentQTabState } from '../shared/protocol'
 import assistantCss from '../vendor/deepseek-harness/packages/client/ui-conversation/src/client/chat/AssistantMarkdown.module.css'
 import chatCss from '../vendor/deepseek-harness/packages/client/ui-conversation/src/client/chat/ChatView.module.css'
 import messageCss from '../vendor/deepseek-harness/packages/client/ui-conversation/src/client/chat/MessageItem.module.css'
@@ -95,18 +95,12 @@ function SubtitleTicker({ state, playbackTime }: { state: MomentQTabState | null
     && state.subtitleIdentity.cid === state.context.identity.cid
   const segments = subtitleMatches ? state.subtitleSegments ?? [] : []
   // Never guess a timestamp. During tab/context reconciliation the live clock
-  // is briefly undefined; falling back to zero made the ticker show the first
-  // caption and then jump back to the real playback position.
-  const historyRows = 4
+  // is briefly undefined; without it the cues cannot be placed at all.
+  const historyRows = 5
   const preview = state?.transcriptPreview?.trim()
   const window = selectSubtitleWindow(segments, playbackTime, historyRows)
-  // Render only the visible window. Keeping hundreds of transparent rows in
-  // the DOM made each 250 ms state update recalculate a large scrollHeight;
-  // that is visually indistinguishable from subtitles jumping up and down.
   if (window === null && (preview === undefined || preview === '')) {
-    // Segments exist but no playback clock has arrived: the ticker cannot
-    // place them. Saying so beats a silently empty panel.
-    if (segments.length > 0 && (playbackTime === undefined || !Number.isFinite(playbackTime))) {
+    if (segments.length > 0) {
       return (
         <div className="momentq-subtitle-ticker" data-subtitle-diagnostic aria-live="off">
           <div className="momentq-subtitle-line">字幕已就绪，等待页面播放时钟…</div>
@@ -118,33 +112,49 @@ function SubtitleTicker({ state, playbackTime }: { state: MomentQTabState | null
   const index = window?.index ?? -1
   const start = window?.start ?? 0
   const visible = window === null ? [] : segments.slice(start, index + 1)
-  // An in-flight ASR sentence is the live line; committed rows shift one slot
-  // further into the fade history while it is on screen.
-  const previewOffset = preview !== undefined && preview !== '' ? 1 : 0
   return (
-    <div
-      className="momentq-subtitle-ticker"
-      data-subtitle-ticker
-      aria-live="polite"
-    >
-      <div className="momentq-subtitle-track">
-        {visible.map((segment, visibleIndex) => {
-          const segmentIndex = start + visibleIndex
-          const distance = index - segmentIndex + previewOffset
-          const active = previewOffset === 0 && distance === 0
-          return <div
-            key={`${segment.start}-${segment.end}-${segment.text}`}
-            className={`momentq-subtitle-line${active ? ' is-current' : ''}`}
-            style={{ opacity: active ? 1 : distance <= historyRows ? Math.max(0.2, 0.78 - distance * 0.14) : 0 }}
-          >{segment.text}</div>
-        })}
-        {previewOffset === 1 && (
-          <div
-            className="momentq-subtitle-line is-current"
-            data-transcript-preview
-            style={{ opacity: 1 }}
-          >{preview}</div>
-        )}
+    <SubtitleScroll
+      key={state?.tabId ?? 'none'}
+      rows={visible}
+      preview={preview}
+      currentIndex={index}
+    />
+  )
+}
+
+function SubtitleScroll({ rows, preview, currentIndex }: {
+  rows: BilibiliSubtitleSegment[]
+  preview: string | undefined
+  currentIndex: number
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const previousIndex = useRef(-1)
+  const hasAnimated = useRef(false)
+  const fingerprint = `${currentIndex}|${preview ?? ''}`
+  useEffect(() => {
+    const node = scrollRef.current
+    if (node === null) return
+    // Advance = smooth rise (the new cue slides up from below the edge);
+    // seek-back = snap. First paint pins without animation.
+    const seekedBack = currentIndex < previousIndex.current
+    const behavior: ScrollBehavior = !hasAnimated.current || seekedBack ? 'auto' : 'smooth'
+    previousIndex.current = currentIndex
+    hasAnimated.current = true
+    node.scrollTo({ top: node.scrollHeight, behavior })
+  }, [fingerprint, currentIndex])
+  return (
+    <div className="momentq-subtitle-ticker" aria-live="polite">
+      <div className="momentq-subtitle-scroll" ref={scrollRef}>
+        <div className="momentq-subtitle-track">
+          {rows.map(segment => (
+            <div key={`${segment.start}-${segment.end}-${segment.text}`} className="momentq-subtitle-line">
+              {segment.text}
+            </div>
+          ))}
+          {preview !== undefined && preview !== '' && (
+            <div className="momentq-subtitle-line is-current" data-transcript-preview>{preview}</div>
+          )}
+        </div>
       </div>
     </div>
   )

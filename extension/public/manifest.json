@@ -51,7 +51,9 @@
         "https://www.bilibili.com/*",
         "https://live.bilibili.com/*"
       ],
-      "js": ["assets/page-bridge.js"],
+      "js": [
+        "assets/page-bridge.js"
+      ],
       "run_at": "document_start",
       "world": "MAIN"
     },
@@ -60,7 +62,9 @@
         "https://www.bilibili.com/*",
         "https://live.bilibili.com/*"
       ],
-      "js": ["assets/content.js"],
+      "js": [
+        "assets/content.js"
+      ],
       "run_at": "document_start"
     }
   ]

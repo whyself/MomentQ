@@ -17,10 +17,11 @@ describe('DSH UI reuse contract', () => {
     expect(css).not.toContain('text-overflow')
     expect(css).not.toMatch(/white-space: nowrap/)
     // Lines wrap; the ticker keeps a fixed footprint so subtitle length
-    // never reflows the conversation above, with the current line anchored
-    // at the bottom and history dissolving into the top edge.
+    // never reflows the conversation above. The inner scroll pins the view
+    // to the bottom so new cues rise smoothly and never clip.
     expect(css).toMatch(/\.momentq-subtitle-ticker \{[\s\S]{0,400}height: 110px/)
-    expect(css).toMatch(/\.momentq-subtitle-track \{[\s\S]{0,200}justify-content: flex-end/)
+    expect(subtitles).toMatch(/\.momentq-subtitle-scroll \{/)
+    expect(subtitles).toMatch(/\.momentq-subtitle-track \{[\s\S]{0,200}padding-bottom/)
     expect(subtitles).toContain('overflow-wrap: anywhere')
   })
 

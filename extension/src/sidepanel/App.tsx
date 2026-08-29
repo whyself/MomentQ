@@ -119,18 +119,28 @@ export function App({ subscribe }: {
       try {
         if (state.transcription === 'inactive') {
           // chrome.tabCapture's user-gesture gate is satisfied inside this
-          // click handler on an extension surface; the background completes
-          // the pipeline with the handed-over stream id.
+          // click handler on an extension surface. The no-target form binds
+          // to the focused tab via this gesture alone; the targeted form is
+          // only a fallback because Chrome additionally requires the
+          // extension to have been "invoked" on that page since its last
+          // navigation — a state panel-open does not refresh.
           let streamId: string | null = null
           try {
-            streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: state.tabId })
+            streamId = await chrome.tabCapture.getMediaStreamId()
           } catch {
             streamId = null
           }
           if (streamId === null) {
-            // Chrome refused the panel-obtained stream id. Falling back lets
-            // the background try and, when it is rejected too, record the
-            // reason on the tab state — the panel shows why.
+            try {
+              streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: state.tabId })
+            } catch {
+              streamId = null
+            }
+          }
+          if (streamId === null) {
+            // Both forms refused. Falling back lets the background try and,
+            // when it is rejected too, record the reason on the tab state —
+            // the panel shows why.
             await bounded(chrome.runtime.sendMessage({
               type: 'MOMENTQ_TOGGLE_TRANSCRIPTION',
               tabId: state.tabId,

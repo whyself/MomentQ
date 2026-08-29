@@ -234,7 +234,24 @@ async function beginTranscription(tabId: number, streamId: string | undefined): 
   if (ownedBySubtitles) return initial
   const run = async (): Promise<MomentQTabState | null> => {
     const settings = await loadSettings()
-    const resolvedStreamId = streamId ?? await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId })
+    // Gestureless entry points cannot satisfy the "invoked" requirement of
+    // the targeted form; the no-target form binds to the focused tab via
+    // whatever gesture relayed here, so try it first.
+    let resolvedStreamId = streamId
+    if (resolvedStreamId === undefined) {
+      try {
+        resolvedStreamId = await chrome.tabCapture.getMediaStreamId()
+      } catch {
+        try {
+          resolvedStreamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId })
+        } catch {
+          resolvedStreamId = undefined
+        }
+      }
+    }
+    if (resolvedStreamId === undefined) {
+      throw new Error('浏览器拒绝音频采集（扩展未在当前页面被调用）。请点击浏览器工具栏上的 MomentQ 图标打开侧边栏后重试。')
+    }
     // The content directory must exist before the companion persists rows.
     // Network stays outside the per-tab queue; the queued commit below only
     // re-validates and writes local state. (MomentQClient bounds each call,
