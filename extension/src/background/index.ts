@@ -110,6 +110,21 @@ function sendToOffscreen(message: unknown): void {
   void chrome.runtime.sendMessage(message).catch(() => {})
 }
 
+/**
+ * Browser-side telemetry: forward pipeline failures to the companion's log
+ * endpoint so the local console carries the exact in-browser error text
+ * (the service worker's own console is not persisted anywhere readable).
+ */
+function reportDiagnostic(message: string): void {
+  void loadSettings().then(settings => {
+    void fetch(`${settings.companionBaseUrl}/log`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message }),
+    }).catch(() => {})
+  }).catch(() => {})
+}
+
 async function ensureOffscreenDocument(): Promise<void> {
   if (await chrome.offscreen.hasDocument()) return
   await chrome.offscreen.createDocument({
@@ -164,6 +179,7 @@ async function stopAsrSession(): Promise<void> {
 
 /** Mark a tab's transcription inactive and tear its session down. */
 async function deactivateTranscription(tabId: number, state: MomentQTabState, error?: string): Promise<MomentQTabState> {
+  if (error !== undefined) reportDiagnostic(`转录停止：${error}`)
   const { transcriptPreview: _preview, ...withoutPreview } = state
   // subtitleSource stays as provenance for the imported finals; ownership is
   // keyed on the live transcription state, not on this field.
@@ -265,6 +281,7 @@ async function beginTranscription(tabId: number, streamId: string | undefined): 
     ])
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
+    reportDiagnostic(`开始转录失败：${reason}`)
     const state = await readState(tabId) ?? initial
     return await tabOperations.run(tabId, () => deactivateTranscription(
       tabId,
@@ -319,6 +336,7 @@ async function applyAsrEvent(message: AsrEventMessage): Promise<void> {
       || event.code === 'provider-connect'
     if (fatal) await deactivateTranscription(tabId, state, event.message)
     else {
+      reportDiagnostic(`转录错误：${event.message}`)
       const next = { ...state, transcriptionError: event.message }
       await writeState(tabId, next)
       publishState(tabId, next)
@@ -434,6 +452,14 @@ function applyContext(tabId: number, context: BilibiliContext | null): Promise<M
 }
 
 const verifiedSubtitleIdentities = new Set<string>()
+/**
+ * Identities whose WBI index provably carries no tracks (valid identity echo,
+ * zero tracks, no login required). Any track that later surfaces for one of
+ * these — whatever channel it rides, including the player tap — is
+ * Bilibili's rotating foreign track for trackless videos; duration alone
+ * cannot catch the short ones (measured: a 137s poison inside a 464s host).
+ */
+const provenTracklessIdentities = new Set<string>()
 /** Non-definitive empties may be re-checked after this long (AI subtitles generate lazily). */
 const SUBTITLE_RETRY_INTERVAL_MS = 45_000
 const subtitleRetryNotBefore = new Map<string, number>()
@@ -477,6 +503,10 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
         verifiedSubtitleIdentities.add(verifyKey)
       }
     } else if (report.definitiveEmpty) {
+      // WBI says this identity has no tracks at all (identity echo validated,
+      // no login required). From now on any track appearing for it is a
+      // server-side poison, so record the veto for every channel.
+      provenTracklessIdentities.add(verifyKey)
       verifiedSubtitleIdentities.add(verifyKey)
     } else {
       subtitleRetryNotBefore.set(verifyKey, Date.now() + SUBTITLE_RETRY_INTERVAL_MS)
@@ -588,6 +618,19 @@ async function syncPageSubtitleTracks(tabId: number, message: PageSubtitleTracks
   if (state?.context.kind !== 'vod'
     || state.context.identity.bvid !== message.payload.bvid
     || state.context.identity.cid !== message.payload.cid) return
+  // Veto first: once the authoritative WBI probe proved this identity
+  // trackless, a later "track" from any channel is Bilibili's rotating
+  // foreign track — short variants slip past the duration gate, so this
+  // record is the only defense. Treat it like an absent status.
+  if (provenTracklessIdentities.has(`${message.payload.bvid}:${message.payload.cid}`)) {
+    if (message.payload.status === 'available') {
+      await writeProbeResult(
+        tabId, message.payload.bvid, message.payload.cid,
+        `已否决迟到的串台轨（WBI 已证实无轨，来源 ${message.payload.origin ?? 'player'}）`,
+      )
+    }
+    return
+  }
   // Only a live recognition session owns the transcript; an ended one keeps
   // its finals as provenance until a real track replaces them.
   if (state.transcription !== 'inactive') return

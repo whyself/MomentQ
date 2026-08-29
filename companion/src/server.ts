@@ -96,7 +96,7 @@ export async function startCompanionServer(
       })
       response.end(content)
     }
-    if (request.method === 'OPTIONS' && (path === '/health' || path === '/config')) {
+    if (request.method === 'OPTIONS' && (path === '/health' || path === '/config' || path === '/log')) {
       response.writeHead(204, {
         ...cors,
         'access-control-allow-methods': 'GET, POST, OPTIONS',
@@ -167,6 +167,26 @@ export async function startCompanionServer(
         return
       }
       sendJson(405, { ok: false, error: { code: 'invalid-request', message: 'GET or POST required' } })
+      return
+    }
+    // Browser-side telemetry: the extension reports its ASR pipeline failures
+    // here so local logs carry the exact in-browser error text.
+    if (path === '/log' || path === '/log/') {
+      if (request.method === 'POST') {
+        try {
+          const parsed: unknown = await readJsonBody(request, MAX_CONFIG_BODY_BYTES)
+          const message = typeof parsed === 'object' && parsed !== null
+            && typeof (parsed as { message?: unknown }).message === 'string'
+            ? (parsed as { message: string }).message.slice(0, 2_000)
+            : ''
+          if (message !== '') log(`[extension] ${message.replaceAll('\n', ' | ')}`)
+          sendJson(200, { ok: true, value: { logged: true } })
+        } catch {
+          sendJson(400, { ok: false, error: { code: 'invalid-request', message: 'invalid log body' } })
+        }
+        return
+      }
+      sendJson(405, { ok: false, error: { code: 'invalid-request', message: 'POST required' } })
       return
     }
     sendJson(404, { ok: false, error: { code: 'not-found', message: 'unknown MomentQ companion endpoint' } })
