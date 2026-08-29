@@ -30,7 +30,7 @@ export type BaiduStreamConfig = {
 
 const TOKEN_URL = 'https://openapi.baidu.com/oauth/2.0/token'
 const REALTIME_URL = 'wss://vop.baidu.com/realtime_asr'
-const STARTED_TIMEOUT_MS = 10_000
+const STARTED_TIMEOUT_MS = 25_000
 const FINISH_GRACE_MS = 3_000
 /** Renew the connection before Baidu's long-connection ceiling (plan: ~1 h). */
 export const CONNECTION_MAX_AGE_MS = 55 * 60_000
@@ -122,6 +122,10 @@ export async function openBaiduStream(
   const socket = (options.socketFactory ?? ((url: string) => new WebSocket(url)))(
     `${REALTIME_URL}?sn=${randomUUID()}`,
   )
+  console.log(`[momentq-companion] 百度 WSS 已拨号：${REALTIME_URL.replace(/\?.*/, '')} (devPid ${config.devPid})`)
+  socket.on('open', () => {
+    console.log('[momentq-companion] 百度 WSS 已连上，等待 STARTED 确认帧…')
+  })
   const openedAt = now()
 
   const sendJson = (value: unknown): void => {
@@ -131,8 +135,10 @@ export async function openBaiduStream(
   // One message listener routes every frame: before STARTED it resolves the
   // handshake, afterwards it forwards recognition events exactly once.
   let resolveStarted: (() => void) | undefined
+  let rejectStarted: ((error: Error) => void) | undefined
   const startedPromise = new Promise<void>((resolve, reject) => {
     resolveStarted = resolve
+    rejectStarted = reject
     const timer = setTimeout(
       () => reject(new Error('Baidu ASR STARTED handshake timed out')),
       STARTED_TIMEOUT_MS,
@@ -152,7 +158,20 @@ export async function openBaiduStream(
     const event = parseBaiduFrame(data.toString())
     if (event === undefined) return
     if (resolveStarted !== undefined) {
-      if (event.kind !== 'started') return
+      // Baidu's real rejection reason (bad appid, wrong dev_pid, quota…)
+      // arrives as an ErrMsg frame during the handshake — surface it instead
+      // of letting the timeout mask it.
+      if (event.kind === 'error') {
+        console.error(`[momentq-companion] 百度握手被拒：${event.message}`)
+        rejectStarted?.(new Error(`百度拒绝握手：${event.message}`))
+        resolveStarted = undefined
+        socket.close()
+        return
+      }
+      if (event.kind !== 'started') {
+        console.log(`[momentq-companion] 百度握手帧：${data.toString().slice(0, 200)}`)
+        return
+      }
       resolveStarted()
       resolveStarted = undefined
       return
@@ -166,6 +185,7 @@ export async function openBaiduStream(
   socket.on('error', (error: Error) => { callbacks.onError(error) })
 
   socket.on('open', () => {
+    console.log(`[momentq-companion] 已发送 START（devPid ${config.devPid}），等待确认…`)
     sendJson({
       type: 'START',
       data: {
