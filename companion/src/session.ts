@@ -125,14 +125,21 @@ export class AsrSession {
       this.stream = stream
       for (const chunk of this.audioQueue.splice(0)) stream.sendAudio(chunk)
     } catch (error) {
-      console.error(`[momentq-companion] ${new Date().toISOString().slice(11, 23)} 百度连接失败：`,
-        error instanceof Error ? error.message : error)
+      const raw = error instanceof Error ? error.message : String(error)
+      console.error(`[momentq-companion] ${new Date().toISOString().slice(11, 23)} 百度连接失败：`, raw)
+      // Baidu drops a session that received no audio for ~10s (err_no 4002
+      // "backend timeout") — the signature of starting on a paused/muted
+      // video. Say that instead of the opaque protocol text.
+      const friendly = /closed during handshake|backend timeout|4002/i.test(raw)
+        ? '未检测到音频输入：请确认视频正在播放且有声音，然后重新开始转录'
+        : raw
+      console.error(`[momentq-companion] ${new Date().toISOString().slice(11, 23)} 百度连接失败：`, friendly)
       // Leave the session alive: the extension keeps streaming and the next
       // frame retries the connection instead of killing the whole capture.
       this.callbacks.send({
         type: 'error',
         code: 'provider-connect',
-        message: error instanceof Error ? error.message : String(error),
+        message: friendly,
       })
     }
   }

@@ -168,13 +168,19 @@ export async function openBaiduStream(
         socket.close()
         return
       }
-      if (event.kind !== 'started') {
+      // Measured behavior on this dev_pid: STARTED never arrives; the first
+      // recognition frame does. Treat either as the handshake completing —
+      // gating on STARTED alone dropped real cues and starved the session.
+      if (event.kind === 'started' || event.kind === 'partial' || event.kind === 'final') {
+        console.log(`[momentq-companion] 百度会话就绪（${event.kind}，${now() - openedAt}ms）`)
+        resolveStarted()
+        resolveStarted = undefined
+        if (event.kind === 'started') return  // consumers ignore it
+        // partial/final fall through to the post-handshake routing below
+      } else {
         console.log(`[momentq-companion] 百度握手帧：${data.toString().slice(0, 200)}`)
         return
       }
-      resolveStarted()
-      resolveStarted = undefined
-      return
     }
     if (event.kind === 'error') {
       callbacks.onError(new Error(event.message))
