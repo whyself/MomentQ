@@ -105,6 +105,10 @@ export function App({ subscribe }: {
   }
   useEffect(() => {
     if (settings === null) return
+    if (settings.asrProvider === 'whisper-local') {
+      setAsrConfigured(true)
+      return
+    }
     let active = true
     fetchCompanionConfig(settings.companionBaseUrl)
       .then(view => { if (active) setAsrConfigured(view.baidu.configured) })
@@ -204,22 +208,22 @@ export function App({ subscribe }: {
   // background via MOMENTQ_ASR_SESSION so the existing watchdog applies.
   useEffect(() => {
     const pending = new Map<number, { streamId: string; identity: import('../shared/protocol').BilibiliContext['identity'] }>()
-    const begin = async (tabId: number, streamId: string, identity: import('../shared/protocol').BilibiliContext['identity']): Promise<void> => {
+    const begin = async (tabId: number, streamId: string, identity: import('../shared/protocol').BilibiliContext['identity'], engine: 'baidu' | 'whisper'): Promise<void> => {
       try {
         const current = await loadSettings()
-        await startPanelSession({ tabId, streamId, identity, companionBaseUrl: current.companionBaseUrl })
+        await startPanelSession({ tabId, streamId, identity, companionBaseUrl: current.companionBaseUrl, engine })
       } catch {
         await stopPanelSession()
       }
     }
     const listener = (message: unknown): false | undefined => {
       if (typeof message !== 'object' || message === null) return false
-      const record = message as { type?: unknown; tabId?: unknown; streamId?: unknown; identity?: unknown; companionBaseUrl?: unknown }
+      const record = message as { type?: unknown; tabId?: unknown; streamId?: unknown; identity?: unknown; companionBaseUrl?: unknown; engine?: unknown }
       if (record.type === 'MOMENTQ_ASR_START_PANEL_SESSION') {
         if (typeof record.tabId === 'number' && typeof record.streamId === 'string'
           && typeof record.identity === 'object' && record.identity !== null
           && typeof record.companionBaseUrl === 'string') {
-          void begin(record.tabId, record.streamId, record.identity as import('../shared/protocol').BilibiliContext['identity'])
+          void begin(record.tabId, record.streamId, record.identity as import('../shared/protocol').BilibiliContext['identity'], record.engine === 'whisper' ? 'whisper' : 'baidu')
         }
         return false
       }

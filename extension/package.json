@@ -6,7 +6,7 @@
   "scripts": {
     "vendor:dsh": "node scripts/vendor-dsh-frontend.mjs",
     "dev": "vite --host 127.0.0.1",
-    "build": "vite build && vite build --config vite.content.config.ts && vite build --config vite.pagebridge.config.ts",
+    "build": "node scripts/copy-ort-assets.mjs && vite build && vite build --config vite.content.config.ts && vite build --config vite.pagebridge.config.ts",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
@@ -21,6 +21,7 @@
     "vitest": "^4.1.8"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "@shikijs/langs": "^4.4.3",
     "@types/mdast": "^4.0.4",
     "anser": "^2.3.5",

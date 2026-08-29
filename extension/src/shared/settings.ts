@@ -6,6 +6,7 @@
  */
 export const ASR_PROVIDERS = [
   { id: 'baidu', label: '百度智能云' },
+  { id: 'whisper-local', label: '本地 Whisper（备用）' },
 ] as const
 
 export const SUBTITLE_MODES = ['append', 'replace'] as const

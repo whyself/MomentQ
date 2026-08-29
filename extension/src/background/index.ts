@@ -251,7 +251,7 @@ async function beginTranscription(tabId: number, streamId: string | undefined): 
       }
     }
     if (resolvedStreamId === undefined) {
-      throw new Error('浏览器要求先在当前页面调用一次扩展：请右键视频页面选择「MomentQ：开始/暂停语音转录」，或点击浏览器工具栏上的 MomentQ 图标后重试。')
+      throw new Error('浏览器要求先在当前页面调用一次扩展：请右键视频页面选择「MomentQ：开始/暂停语音转录」、按 Alt+Shift+T，或点击浏览器工具栏上的 MomentQ 图标后重试。')
     }
     // The content directory must exist before the companion persists rows.
     // Network stays outside the per-tab queue; the queued commit below only
@@ -291,6 +291,7 @@ async function beginTranscription(tabId: number, streamId: string | undefined): 
         streamId: resolvedStreamId,
         identity: current.context.identity,
         companionBaseUrl: settings.companionBaseUrl,
+        engine: settings.asrProvider === 'whisper-local' ? 'whisper' : 'baidu',
       }).catch(() => {})
       armStartAckWatchdog(tabId)
       return await readState(tabId)
@@ -460,6 +461,13 @@ async function ensureTabBridge(tabId: number): Promise<boolean> {
 async function applyContextUnlocked(tabId: number, context: BilibiliContext | null): Promise<MomentQTabState | null> {
   const previous = await readState(tabId)
   const next = reduceTabState(previous, { type: 'SET_CONTEXT', tabId, context })
+  // A part/video switch resets transcription to 'inactive' (identity change
+  // drops preserve) — the capture session must be torn down with it, or the
+  // panel keeps transcribing whatever audio still flows while every control
+  // shows "start" again.
+  if (previous !== null && previous.transcription !== 'inactive' && next?.transcription === 'inactive') {
+    void stopAsrSession()
+  }
   await writeState(tabId, next)
   if (JSON.stringify(previous) !== JSON.stringify(next)) publishState(tabId, next)
   if (context?.kind === 'vod') {
@@ -973,6 +981,20 @@ chrome.commands.onCommand.addListener((command) => {
         await chrome.runtime.sendMessage({ type: 'MOMENTQ_FRAME_CAPTURED', dataUrl: frame }).catch(() => {})
       }
     }).catch(() => {})
+    return
+  }
+  if (command === 'toggle-transcription') {
+    // A keyboard command is an extension invocation + gesture on the active
+    // tab — the same grant the context menu provides — so capture can start
+    // directly from here.
+    void chrome.tabs.query({ active: true, lastFocusedWindow: true }).then(([tab]) => {
+      const tabId = tab?.id
+      if (tabId === undefined) return
+      void toggleTranscription(tabId).then(state => {
+        const failure = state?.transcriptionError
+        if (failure !== undefined) reportDiagnostic(`快捷键转录失败：${failure}`)
+      }).catch(() => {})
+    })
     return
   }
   if (command !== 'open-side-panel') return

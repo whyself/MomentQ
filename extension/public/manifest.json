@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "MomentQ（刻问）",
   "description": "使用当前 B 站视频或直播上下文向 MomentQ 提问。",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "permissions": [
     "sidePanel",
     "storage",
@@ -20,7 +20,10 @@
     "https://*.biliapi.com/*",
     "https://*.hdslb.com/*",
     "http://127.0.0.1/*",
-    "http://localhost/*"
+    "http://localhost/*",
+    "https://huggingface.co/*",
+    "https://cdn-lfs.huggingface.co/*",
+    "https://*.hf.co/*"
   ],
   "background": {
     "service_worker": "assets/background.js",
@@ -44,6 +47,12 @@
         "default": "Alt+Shift+C"
       },
       "description": "截取当前视频画面"
+    },
+    "toggle-transcription": {
+      "suggested_key": {
+        "default": "Alt+Shift+T"
+      },
+      "description": "开始/暂停语音转录"
     }
   },
   "content_scripts": [
