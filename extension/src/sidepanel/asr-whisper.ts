@@ -59,7 +59,16 @@ export function ensureWhisper(model: WhisperModel, onStatus: (status: string) =>
         const percent = Math.floor((loaded / total) * 100)
         onStatus(`模型下载 ${percent}%（${(loaded / 1024 / 1024).toFixed(0)}/${(total / 1024 / 1024).toFixed(0)} MB · ${files.size} 个文件）`)
       } else if (info.status === 'done' && typeof info.file === 'string') {
-        onStatus(`已下载 ${info.file.split('/').pop()}`)
+        // Never let a per-file notice mask the aggregate: the encoder is the
+        // long pole and its absence made "已下载 decoder…" look like a stall.
+        let loaded = 0
+        let total = 0
+        for (const entry of files.values()) {
+          loaded += entry.loaded
+          total += entry.total
+        }
+        const percent = total > 0 ? Math.floor((loaded / total) * 100) : 0
+        onStatus(`已下载 ${info.file.split('/').pop()} · 整体 ${percent}%（${files.size} 个文件进行中/完成）`)
       }
     }
 
