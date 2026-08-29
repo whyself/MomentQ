@@ -167,27 +167,22 @@ describe('panel-open bridge recovery', () => {
       .not.toMatch(/chrome\.runtime\.sendMessage\(/)
   })
 
-  it('waits for the offscreen listener before sending START', async () => {
+  it('runs the capture session inside the panel document', async () => {
     const background = await readFile(join(import.meta.dirname, '..', 'src', 'background', 'index.ts'), 'utf8')
-    // createDocument resolving does not mean the offscreen listener is up; a
-    // START sent into that gap is dropped and the toggle looks dead.
-    expect(background).toContain('async function waitUntilOffscreenReady')
+    // Edge's offscreen document cannot consume tab-capture streams; the
+    // panel document (which acquired the id under its own gesture) runs the
+    // session and confirms it via MOMENTQ_ASR_SESSION for the watchdog.
     const begin = background.slice(background.indexOf('async function beginTranscription'))
-    expect(begin.indexOf('waitUntilOffscreenReady')).toBeLessThan(begin.indexOf("'MOMENTQ_ASR_START'"))
-    expect(begin).toContain('音频采集管线未就绪')
-    // The whole start run is bounded and START carries an ack watchdog: a
-    // hang anywhere converts into a visible error, never a dead click.
-    expect(begin).toContain('BEGIN_TIMEOUT_MS')
-    expect(begin).toContain('armStartAckWatchdog')
-    // The panel races its own timeout and renders a local notice.
+    expect(begin).toContain("'MOMENTQ_ASR_START_PANEL_SESSION'")
+    expect(begin).not.toContain("type: 'MOMENTQ_ASR_START'")
+    expect(background).toContain('armStartAckWatchdog')
     const app = await readFile(join(import.meta.dirname, '..', 'src', 'sidepanel', 'App.tsx'), 'utf8')
+    expect(app).toContain('startPanelSession')
     expect(app).toContain('面板等待后台响应超时')
     expect(app).toContain('setTranscriptionNotice')
-    // The offscreen answers MOMENTQ_ASR_QUERY in-band so the probe and the
-    // worker-restart re-attach both observe it.
-    const offscreen = await readFile(join(import.meta.dirname, '..', 'src', 'offscreen', 'index.ts'), 'utf8')
-    expect(offscreen).toMatch(/MOMENTQ_ASR_QUERY[\s\S]{0,400}sendResponse/)
-    expect(background).toContain("reply.type === 'MOMENTQ_ASR_SESSION'")
+    const session = await readFile(join(import.meta.dirname, '..', 'src', 'sidepanel', 'asr-session.ts'), 'utf8')
+    expect(session).toContain('export async function startPanelSession')
+    expect(session).toContain('MOMENTQ_ASR_SESSION')
   })
 
   it('never lets a part-1 resolution clobber a player-proven part binding', async () => {

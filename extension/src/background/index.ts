@@ -280,13 +280,18 @@ async function beginTranscription(tabId: number, streamId: string | undefined): 
       publishState(tabId, next)
       asrTabId = tabId
       startClockPolling()
-      sendToOffscreen({
-        type: 'MOMENTQ_ASR_START',
+      // The capture session runs IN THE SIDE PANEL: Edge's offscreen document
+      // cannot consume tab-capture streams ("Error starting tab capture"),
+      // while the panel document is the context that both acquired the id and
+      // holds the user gesture. The panel confirms via MOMENTQ_ASR_SESSION,
+      // which the ack watchdog (and the QUERY responder in the panel) covers.
+      void chrome.runtime.sendMessage({
+        type: 'MOMENTQ_ASR_START_PANEL_SESSION',
         tabId,
         streamId: resolvedStreamId,
         identity: current.context.identity,
         companionBaseUrl: settings.companionBaseUrl,
-      })
+      }).catch(() => {})
       armStartAckWatchdog(tabId)
       return await readState(tabId)
     })

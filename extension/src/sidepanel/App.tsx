@@ -5,6 +5,7 @@ import { fetchCompanionConfig } from '../shared/companion-client'
 import { loadSettings } from '../shared/settings-store'
 import type { ExtensionSettings } from '../shared/settings'
 import { ConversationView } from './ConversationView'
+import { pausePanelSession, panelSessionTabId, sessionClock, startPanelSession, stopPanelSession } from './asr-session'
 import { SettingsView } from './SettingsView'
 import { applyTheme } from './theme'
 import './composition.css'
@@ -69,6 +70,7 @@ export function App({ subscribe }: {
       const value = await chrome.runtime.sendMessage({ type: 'MOMENTQ_GET_CURRENT_VIDEO_TIME' }).catch(() => null)
       if (!disposed && typeof value === 'number' && Number.isFinite(value)) {
         setPlaybackClock({ key, seconds: value })
+        sessionClock(value)
       }
       if (!disposed) timer = window.setTimeout(() => { void poll() }, 250)
     }
@@ -196,6 +198,60 @@ export function App({ subscribe }: {
       }
     })()
   }
+
+  // Panel-run capture session lifecycle. The session lives in this document
+  // (Edge's offscreen cannot consume tab-capture streams); it confirms to the
+  // background via MOMENTQ_ASR_SESSION so the existing watchdog applies.
+  useEffect(() => {
+    const pending = new Map<number, { streamId: string; identity: import('../shared/protocol').BilibiliContext['identity'] }>()
+    const begin = async (tabId: number, streamId: string, identity: import('../shared/protocol').BilibiliContext['identity']): Promise<void> => {
+      try {
+        const current = await loadSettings()
+        await startPanelSession({ tabId, streamId, identity, companionBaseUrl: current.companionBaseUrl })
+      } catch {
+        await stopPanelSession()
+      }
+    }
+    const listener = (message: unknown): false | undefined => {
+      if (typeof message !== 'object' || message === null) return false
+      const record = message as { type?: unknown; tabId?: unknown; streamId?: unknown; identity?: unknown; companionBaseUrl?: unknown }
+      if (record.type === 'MOMENTQ_ASR_START_PANEL_SESSION') {
+        if (typeof record.tabId === 'number' && typeof record.streamId === 'string'
+          && typeof record.identity === 'object' && record.identity !== null
+          && typeof record.companionBaseUrl === 'string') {
+          void begin(record.tabId, record.streamId, record.identity as import('../shared/protocol').BilibiliContext['identity'])
+        }
+        return false
+      }
+      if (record.type === 'MOMENTQ_ASR_PAUSE') {
+        pausePanelSession(true)
+        return false
+      }
+      if (record.type === 'MOMENTQ_ASR_RESUME') {
+        pausePanelSession(false)
+        return false
+      }
+      if (record.type === 'MOMENTQ_ASR_STOP') {
+        void stopPanelSession()
+        return false
+      }
+      if (record.type === 'MOMENTQ_ASR_QUERY') {
+        try {
+          chrome.runtime.sendMessage({ type: 'MOMENTQ_ASR_SESSION', tabId: panelSessionTabId() }).catch(() => {})
+        } catch { /* dead context */ }
+        return false
+      }
+      return false
+    }
+    chrome.runtime.onMessage.addListener(listener)
+    const onUnload = (): void => { void stopPanelSession() }
+    window.addEventListener('pagehide', onUnload)
+    return () => {
+      chrome.runtime.onMessage.removeListener(listener)
+      window.removeEventListener('pagehide', onUnload)
+      void stopPanelSession()
+    }
+  }, [])
 
   const loadHistory = useCallback(async (current: MomentQTabState) => {
     if (settings === null) return []
