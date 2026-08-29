@@ -6,8 +6,8 @@ import {
 } from '../dsh/primitives'
 import type { MenuEntry } from '../dsh/primitives'
 import { sanitizeSettings } from '../shared/settings'
-import { ASR_PROVIDERS } from '../shared/settings'
-import type { AsrProviderId, ExtensionSettings, ThemePreference } from '../shared/settings'
+import { ASR_PROVIDERS, WHISPER_MODELS } from '../shared/settings'
+import type { AsrProviderId, ExtensionSettings, ThemePreference, WhisperModelId } from '../shared/settings'
 import { MomentQClient } from '../shared/host-client'
 import { fetchCompanionConfig, saveCompanionBaiduCredentials, type CompanionConfigView } from '../shared/companion-client'
 import { loadModelApiKey, saveModelApiKey, saveSettings } from '../shared/settings-store'
@@ -249,6 +249,13 @@ function AsrSection({ draft, setDraft, saving, saveError, onSave }: {
         value={draft.asrProvider}
         items={ASR_PROVIDERS.map(({ id, label }) => ({ id, label }))}
         onSelect={id => { setDraft({ ...draft, asrProvider: id as AsrProviderId }) }}
+      />
+      <SelectRow
+        title="本地 Whisper 模型"
+        description="仅在 ASR 服务商选本地 Whisper 时生效；精准档需要浏览器支持 WebGPU。"
+        value={draft.whisperModel}
+        items={WHISPER_MODELS.map(({ id, label }) => ({ id, label }))}
+        onSelect={id => { setDraft({ ...draft, whisperModel: id as WhisperModelId }) }}
       />
       <Row title="百度云 App ID" description="与 API Key、Secret Key 一起填写后保存到本机 companion。">
         <Input

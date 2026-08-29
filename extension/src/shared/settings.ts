@@ -9,6 +9,14 @@ export const ASR_PROVIDERS = [
   { id: 'whisper-local', label: '本地 Whisper（备用）' },
 ] as const
 
+export const WHISPER_MODELS = [
+  { id: 'base', label: '快速 · whisper-base（默认）' },
+  { id: 'small', label: '均衡 · whisper-small' },
+  { id: 'large-turbo', label: '精准 · whisper-large-v3-turbo（需 WebGPU）' },
+] as const
+
+export type WhisperModelId = (typeof WHISPER_MODELS)[number]['id']
+
 export const SUBTITLE_MODES = ['append', 'replace'] as const
 export const THEME_PREFERENCES = ['light', 'dark', 'system'] as const
 
@@ -21,6 +29,7 @@ export type ExtensionSettings = {
   hostBaseUrl: string
   companionBaseUrl: string
   asrProvider: AsrProviderId
+  whisperModel: WhisperModelId
   subtitleMode: SubtitleMode
   autoConnect: boolean
   theme: ThemePreference
@@ -31,6 +40,7 @@ export const DEFAULT_SETTINGS: Readonly<ExtensionSettings> = Object.freeze({
   hostBaseUrl: 'http://127.0.0.1:3182',
   companionBaseUrl: 'http://127.0.0.1:3090',
   asrProvider: 'baidu',
+  whisperModel: 'base',
   subtitleMode: 'append',
   autoConnect: true,
   theme: 'system',
@@ -59,6 +69,7 @@ function memberOf<T extends string>(value: unknown, values: readonly T[], fallba
 }
 
 const ASR_PROVIDER_IDS = ASR_PROVIDERS.map(provider => provider.id)
+const WHISPER_MODEL_IDS = WHISPER_MODELS.map(model => model.id)
 
 export function sanitizeSettings(value: unknown): ExtensionSettings {
   const source = isRecord(value) ? value : {}
@@ -71,6 +82,7 @@ export function sanitizeSettings(value: unknown): ExtensionSettings {
     hostBaseUrl,
     companionBaseUrl: localHttpUrl(source.companionBaseUrl, DEFAULT_SETTINGS.companionBaseUrl),
     asrProvider: memberOf(source.asrProvider, ASR_PROVIDER_IDS, DEFAULT_SETTINGS.asrProvider),
+    whisperModel: memberOf(source.whisperModel, WHISPER_MODEL_IDS, DEFAULT_SETTINGS.whisperModel),
     subtitleMode: memberOf(source.subtitleMode, SUBTITLE_MODES, DEFAULT_SETTINGS.subtitleMode),
     autoConnect: typeof source.autoConnect === 'boolean' ? source.autoConnect : DEFAULT_SETTINGS.autoConnect,
     theme: memberOf(source.theme, THEME_PREFERENCES, DEFAULT_SETTINGS.theme),

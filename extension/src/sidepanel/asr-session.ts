@@ -17,7 +17,7 @@ import type {
 } from '../shared/protocol'
 import { isCompanionServerMessage } from '../../../shared/src/companion-protocol'
 import { floatToInt16, int16ToBuffer, resampleLinear } from '../offscreen/pcm'
-import { transcribeChunk } from './asr-whisper'
+import { transcribeChunk, type WhisperModel } from './asr-whisper'
 
 export type PanelSessionStart = {
   tabId: number
@@ -25,9 +25,11 @@ export type PanelSessionStart = {
   identity: BilibiliContext['identity']
   companionBaseUrl: string
   engine: 'baidu' | 'whisper'
+  whisperModel: WhisperModel
 }
 
 type WhisperRuntime = {
+  model: WhisperModel
   pending: Float32Array
   processing: boolean
   paused: boolean
@@ -148,7 +150,7 @@ export async function startPanelSession(request: PanelSessionStart): Promise<voi
     }
 
     const whisper: WhisperRuntime | undefined = request.engine === 'whisper'
-      ? { pending: new Float32Array(0), processing: false, paused: false, totalSamples: 0, lastMediaSeconds: null }
+      ? { model: request.whisperModel, pending: new Float32Array(0), processing: false, paused: false, totalSamples: 0, lastMediaSeconds: null }
       : undefined
 
     if (request.engine === 'baidu') {
@@ -224,7 +226,7 @@ async function runWhisperChunk(tabId: number, audio: Float32Array, runtime: Whis
   const chunkSeconds = audio.length / 16_000
   try {
     reportEvent(tabId, { type: 'partial', text: '本地识别中…' })
-    const text = await transcribeChunk(audio, status => {
+    const text = await transcribeChunk(audio, runtime.model, (status: string) => {
       reportEvent(tabId, { type: 'partial', text: status })
     })
     if (text !== '') {

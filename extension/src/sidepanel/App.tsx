@@ -208,6 +208,7 @@ export function App({ subscribe }: {
           identity: current.context.identity,
           companionBaseUrl: config?.companionBaseUrl ?? 'http://127.0.0.1:3090',
           engine: config?.asrProvider === 'whisper-local' ? 'whisper' : 'baidu',
+          whisperModel: config?.whisperModel ?? 'base',
         })
       } catch {
         await stopPanelSession()
