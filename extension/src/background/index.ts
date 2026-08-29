@@ -234,19 +234,20 @@ async function beginTranscription(tabId: number, streamId: string | undefined): 
   if (ownedBySubtitles) return initial
   const run = async (): Promise<MomentQTabState | null> => {
     const settings = await loadSettings()
-    // Gestureless entry points cannot satisfy the "invoked" requirement of
-    // the targeted form; the no-target form binds to the focused tab via
-    // whatever gesture relayed here, so try it first.
+    // The offscreen document consumes the stream, so the streamId must come
+    // from the TARGETED form (the documented SW→offscreen pattern; requires
+    // the invocation that the context menu or toolbar click grants). The
+    // no-target form succeeds everywhere but its id is bound to the calling
+    // context and dies crossing into offscreen with "Error starting tab
+    // capture" — keep it strictly as a fallback.
     let resolvedStreamId = streamId
     if (resolvedStreamId === undefined) {
+      // Only the targeted form produces an id the offscreen consumer can
+      // use; without invocation it fails here with the actionable guidance.
       try {
-        resolvedStreamId = await chrome.tabCapture.getMediaStreamId()
+        resolvedStreamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId })
       } catch {
-        try {
-          resolvedStreamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId })
-        } catch {
-          resolvedStreamId = undefined
-        }
+        resolvedStreamId = undefined
       }
     }
     if (resolvedStreamId === undefined) {

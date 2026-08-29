@@ -158,29 +158,22 @@ export function App({ subscribe }: {
       ])
       try {
         if (state.transcription === 'inactive') {
-          // chrome.tabCapture's user-gesture gate is satisfied inside this
-          // click handler on an extension surface. The no-target form binds
-          // to the focused tab via this gesture alone; the targeted form is
-          // only a fallback because Chrome additionally requires the
-          // extension to have been "invoked" on that page since its last
-          // navigation — a state panel-open does not refresh.
+          // The click is the gesture; the TARGETED form is the only one
+          // whose stream id survives the handoff to the offscreen consumer
+          // (the no-target id is bound to the calling context and dies in
+          // offscreen with "Error starting tab capture"). The targeted form
+          // additionally needs the extension invoked on this page — the
+          // context-menu entry or a toolbar-icon click grants that.
           let streamId: string | null = null
           try {
-            streamId = await chrome.tabCapture.getMediaStreamId()
+            streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: state.tabId })
           } catch {
             streamId = null
           }
           if (streamId === null) {
-            try {
-              streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: state.tabId })
-            } catch {
-              streamId = null
-            }
-          }
-          if (streamId === null) {
-            // Both forms refused. Falling back lets the background try and,
-            // when it is rejected too, record the reason on the tab state —
-            // the panel shows why.
+            // Let the background try with whatever invocation state exists
+            // and, when it is rejected too, record the reason on the tab
+            // state — the panel shows why.
             await bounded(sendWithRetry({
               type: 'MOMENTQ_TOGGLE_TRANSCRIPTION',
               tabId: state.tabId,

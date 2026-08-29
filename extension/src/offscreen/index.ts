@@ -98,10 +98,13 @@ async function startSession(request: AsrStartMessage): Promise<void> {
     session = { tabId: request.tabId, stream: captureStream, context, socket }
     postToBackground({ type: 'MOMENTQ_ASR_SESSION', tabId: request.tabId })
   } catch (error) {
+    const raw = error instanceof Error ? error.message : String(error)
     reportEvent(request.tabId, {
       type: 'error',
       code: 'capture-start',
-      message: error instanceof Error ? error.message : '音频捕获启动失败',
+      message: /tab capture/i.test(raw)
+        ? '标签页采集启动失败：采集授权可能已随页面刷新失效，请重新通过右键菜单启动'
+        : raw,
     })
     await stopSession()
   }
