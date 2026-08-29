@@ -1,6 +1,6 @@
 import type { BilibiliPageSnapshot, PageMessageEnvelope, PageSubtitleTracksMessageEnvelope } from '../shared/protocol'
 import { parseSubtitleIndex, subtitleTracks } from '../shared/bilibili-subtitle'
-import { identityConsistent, type RawVodIdentity } from './snapshot-identity'
+import type { RawVodIdentity } from './snapshot-identity'
 import { selectVodPage } from './page-snapshot'
 
 declare global {
@@ -199,7 +199,6 @@ let subtitleRequestKey = ''
 let subtitleInflightKey = ''
 let subtitleRequest: AbortController | undefined
 let pageFetch: typeof window.fetch = window.fetch.bind(window)
-let subtitleAutoRequestKey = ''
 let subtitleFetchHookInstalled = false
 
 function postSubtitleTracks(snapshot: BilibiliPageSnapshot, tracks: string[], status: 'available' | 'absent' = 'available'): void {
@@ -301,50 +300,13 @@ function installSubtitleNetworkTap(): void {
   subtitleFetchHookInstalled = true
 }
 
-function requestBilibiliSubtitleLoad(snapshot: BilibiliPageSnapshot): void {
-  const bvid = snapshot.vod?.bvid
-  const cid = snapshot.vod?.cid
-  if (bvid === undefined || cid === undefined) return
-  const key = `${bvid}:${String(cid)}`
-  // One forced load per identity: skip when a click attempt already ran or a
-  // track result (available or definitive absence) has been posted.
-  if (subtitleAutoRequestKey === key || subtitleRequestKey === key) return
-  const visible = (node: HTMLElement): boolean => {
-    const style = window.getComputedStyle(node)
-    const box = node.getBoundingClientRect()
-    return style.display !== 'none' && style.visibility !== 'hidden' && box.width > 0 && box.height > 0
-  }
-  // Older players list "中文（自动翻译）" as a subtitle-language item; newer
-  // ones nest it inside the "翻译和字幕转写" panel. Selecting it is what
-  // makes Bilibili generate and expose its own ai-zh track.
-  const findItem = (): HTMLElement | undefined => {
-    const byLan = [...document.querySelectorAll<HTMLElement>('[data-lan="ai-zh"]')].find(visible)
-    if (byLan !== undefined) return byLan
-    return [...document.querySelectorAll<HTMLElement>('[class*="bpx-player"]')]
-      .filter(node => visible(node) && (node.textContent ?? '').trim().startsWith('中文（自动翻译）'))
-      .sort((left, right) => (left.textContent ?? '').length - (right.textContent ?? '').length)[0]
-  }
-  const attempt = (count: number): void => {
-    const item = findItem()
-    if (item !== undefined) {
-      item.click()
-      return
-    }
-    if (count >= 16) return
-    window.setTimeout(() => attempt(count + 1), 250)
-  }
-  const button = document.querySelector<HTMLElement>('.bpx-player-ctrl-subtitle')
-    ?? document.querySelector<HTMLElement>('.bpx-player-ctrl-subtitle-translate')
-  if (button === null) return
-  subtitleAutoRequestKey = key
-  const item = findItem()
-  if (item !== undefined) {
-    item.click()
-    return
-  }
-  button.click()
-  attempt(0)
-}
+// NOTE: there is deliberately no player-menu auto-click here. Clicking
+// "中文（自动翻译）" during a navigation transition makes Bilibili generate a
+// translation of whatever audio is still playing — the previous video's —
+// and attach it permanently to the new video's track list. Those poisoned
+// tracks then import under a perfectly valid identity (cross-video
+// subtitles). Lazy AI tracks surface through the retry/reconcile loops
+// instead once they exist.
 
 function installBridge(): void {
   if (window.__MOMENTQ_PAGE_BRIDGE_V1__) return
@@ -421,15 +383,9 @@ function installBridge(): void {
   // player's subtitle resource once for this content identity.
   window.setInterval(() => {
     installSubtitleNetworkTap()
-    const { snapshot, rawVod } = readSnapshotParts()
+    const { snapshot } = readSnapshotParts()
     if (snapshot.vod?.bvid !== undefined && snapshot.vod.cid !== undefined) {
       void publishSubtitle(snapshot)
-      // The auto-click drives whatever player is in the DOM; with a stale
-      // page state that is the previous video's player, and forcing its
-      // subtitle menu would burn this identity's one-shot attempt.
-      if (identityConsistent(rawVod, { bvid: snapshot.vod.bvid, cid: String(snapshot.vod.cid) })) {
-        requestBilibiliSubtitleLoad(snapshot)
-      }
     }
   }, 750)
   publish()

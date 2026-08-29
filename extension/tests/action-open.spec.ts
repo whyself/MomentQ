@@ -72,9 +72,12 @@ describe('panel-open bridge recovery', () => {
 
   it('drives the player menu to surface the built-in translated track', async () => {
     const source = await readFile(join(import.meta.dirname, '..', 'src', 'content', 'page-bridge.ts'), 'utf8')
-    const click = source.slice(source.indexOf('function requestBilibiliSubtitleLoad'))
-    expect(click).toContain('[data-lan="ai-zh"]')
-    expect(click).toContain('自动翻译')
+    // The player-menu auto-click is deliberately GONE: during navigation it
+    // made Bilibili attach a translation of the previous video's audio to
+    // the new video permanently (poisoned tracks that import cleanly).
+    expect(source).not.toContain('requestBilibiliSubtitleLoad')
+    expect(source).not.toContain("querySelector<HTMLElement>('.bpx-player-ctrl-subtitle')")
+    expect(source).toContain('no player-menu auto-click')
   })
 
   it('never drops a failed capture start silently from the panel', async () => {
