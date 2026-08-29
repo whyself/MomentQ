@@ -112,11 +112,15 @@ body {
 }
 
 .momentq-subtitle-ticker {
+  /* Fixed footprint: the ticker never grows with subtitle length, so the
+   * conversation layout above stays put. Rows wrap inside; history dissolves
+   * into the top edge and the track is anchored to the bottom so the
+   * current line is always visible. */
   width: min(100%, 720px);
+  height: 110px;
   margin: 0 auto 8px;
+  overflow: hidden;
   pointer-events: none;
-  /* The scrolling effect: history rows dissolve into the top edge instead of
-   * being cut off when they leave the visible window. */
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 22%, black 100%);
   mask-image: linear-gradient(to bottom, transparent 0, black 22%, black 100%);
 }
@@ -125,4 +129,6 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: flex-end;
+  min-height: 100%;
 }

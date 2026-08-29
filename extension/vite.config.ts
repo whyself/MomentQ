@@ -12,6 +12,11 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    // Vite emits <link rel="modulepreload"> for lazy chunks; in the
+    // extension page world Chrome rejects them ("cross-world extension
+    // resource mismatch"), which surfaces as errors on the extensions
+    // page. Disable emission entirely.
+    modulePreload: false,
     rollupOptions: {
       input: {
         sidepanel: resolve(import.meta.dirname, 'sidepanel.html'),

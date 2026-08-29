@@ -11,15 +11,16 @@ describe('DSH UI reuse contract', () => {
     expect(css).not.toMatch(/color|background|border|shadow|radius|font|padding|gap/)
   })
 
-  it('wraps long titles and subtitles instead of truncating them', async () => {
+  it('wraps long titles and subtitles without truncation inside a fixed ticker', async () => {
     const css = await source('sidepanel', 'composition.css')
     const subtitles = await source('sidepanel', 'subtitle.css')
     expect(css).not.toContain('text-overflow')
     expect(css).not.toMatch(/white-space: nowrap/)
-    // The subtitle ticker must grow with wrapped content instead of clipping
-    // rows behind a fixed height.
-    expect(css).not.toContain('max-height')
-    expect(subtitles).not.toMatch(/max-height|overflow: hidden/)
+    // Lines wrap; the ticker keeps a fixed footprint so subtitle length
+    // never reflows the conversation above, with the current line anchored
+    // at the bottom and history dissolving into the top edge.
+    expect(css).toMatch(/\.momentq-subtitle-ticker \{[\s\S]{0,400}height: 110px/)
+    expect(css).toMatch(/\.momentq-subtitle-track \{[\s\S]{0,200}justify-content: flex-end/)
     expect(subtitles).toContain('overflow-wrap: anywhere')
   })
 
