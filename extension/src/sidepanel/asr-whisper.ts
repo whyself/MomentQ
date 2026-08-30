@@ -86,7 +86,11 @@ export function ensureWhisper(model: WhisperModel, onStatus: (status: string) =>
   if (cached !== undefined) return cached
   const promise = (async () => {
     const module = await import('@huggingface/transformers') as unknown as {
-      env: { allowLocalModels: boolean; backends: { onnx: { wasm: { wasmPaths: string } } } }
+      env: {
+        allowLocalModels: boolean
+        logLevel?: string
+        backends: { onnx: { wasm: { wasmPaths: string }; logLevel?: string } }
+      }
       pipeline: (task: 'automatic-speech-recognition', model: string, options: {
         dtype?: string | Record<string, string>
         device?: string
@@ -95,6 +99,11 @@ export function ensureWhisper(model: WhisperModel, onStatus: (status: string) =>
     }
     module.env.allowLocalModels = false
     module.env.backends.onnx.wasm.wasmPaths = chrome.runtime.getURL('ort/')
+    // ORT's session_state node-assignment notes are advisory (WebGPU always
+    // keeps a few nodes on the wasm fallback EP) but Edge promotes them to
+    // DevTools "problems", where they read like failures. Real errors stay
+    // visible; the advisory tier does not.
+    module.env.backends.onnx.logLevel = 'error'
 
     // Multi-file downloads (encoder + decoder + configs): a per-file percent
     // reads "100%" while the largest file is still streaming — the exact
