@@ -189,7 +189,9 @@ export class MomentQService extends Service {
   // agentPresets is mounted only when an Agent is created. Keeping it out of
   // service-init dependencies breaks the profile cycle where the MomentQ-only
   // preset roster obtains this service's package-owned presetRoot.
-  static inject = ['agents', 'sessions', 'sessionPersistence', 'workspaceRegistry']
+  // attachments: image bytes for user questions are admitted through the
+  // content-addressed store and referenced from the message (vision model).
+  static inject = ['agents', 'sessions', 'sessionPersistence', 'workspaceRegistry', 'attachments']
 
   static Config = z.object({
     root: z.string().required(),

@@ -339,8 +339,12 @@ export function apply(ctx: Context): void {
         if (failure.status === 500) ctx.logger.warn(error instanceof Error ? error : new Error(String(error)))
         if (res.headersSent) {
           if (!res.destroyed) {
+            // Single-user loopback surface: the requester's own panel renders
+            // this message, so it carries the real reason (the redacted JSON
+            // 500s still guard the unary routes).
+            const detail = error instanceof Error ? error.message : String(error)
             res.end(`${JSON.stringify({
-              type: 'error', code: failure.code, message: failure.message,
+              type: 'error', code: failure.code, message: `${failure.message}: ${detail}`,
             })}\n`)
           }
         } else {

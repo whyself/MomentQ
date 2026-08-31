@@ -85,6 +85,18 @@ async function boot(root: string): Promise<Runtime> {
     writeBatchMaxDelayMs: 1,
   })
   await ctx.plugin(LocalFileSystem, { cwd: root })
+  // The MomentQ service declares the attachment store (image questions);
+  // these tests stream text only, so a stub is sufficient.
+  ctx.provide('attachments', {
+    saveImages: async (images: readonly { data: string }[]) => images.map(image => ({
+      attachmentId: 'sha256:' + '0'.repeat(64),
+      mediaType: 'image/png',
+      bytes: 1,
+      width: 1,
+      height: 1,
+      name: 'stub.png',
+    })),
+  } as never)
   ctx.tools.register(nativeTool('grep'))
   ctx.tools.register(nativeTool('read'))
 

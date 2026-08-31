@@ -74,6 +74,16 @@ async function harness(): Promise<FakeHarness> {
   ctx.provide('sessions', { flush } as never)
   ctx.provide('agentPresets', { mount } as never)
   ctx.provide('workspaceRegistry', { archiveSession: archive } as never)
+  ctx.provide('attachments', {
+    saveImages: vi.fn(async (images: readonly { data: string }[]) => images.map(image => ({
+      attachmentId: 'sha256:' + '0'.repeat(64),
+      mediaType: 'image/png',
+      bytes: 1,
+      width: 1,
+      height: 1,
+      name: 'stub.png',
+    }))),
+  } as never)
   ctx.provide('sessionPersistence', {
     list: async () => persisted.map(item => ({
       version: 0, id: item.id, createdAt: 0, cwd: item.cwd, agentPreset: item.agentPreset,
@@ -192,7 +202,7 @@ describe.sequential('MomentQ Host service', () => {
     roots.push(root)
     process.env.DSH_HOME = join(root, 'elsewhere')
     const ctx = new Context()
-    for (const name of ['agents', 'sessions', 'agentPresets', 'workspaceRegistry', 'sessionPersistence']) {
+    for (const name of ['agents', 'sessions', 'agentPresets', 'workspaceRegistry', 'sessionPersistence', 'attachments']) {
       ctx.provide(name as never, {} as never)
     }
     await expect(ctx.plugin(MomentQService, { root: join(root, 'data') })).rejects.toThrow(/DSH_HOME/)
