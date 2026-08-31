@@ -22,18 +22,27 @@ export class TabOperationQueue {
     // (Operations here are local storage reads/writes only — network never
     // enters this queue — so a step that exceeds the caller timeout is rare
     // and the queue briefly pausing behind it is the safer failure.)
+    const CALLER_TIMEOUT_MS = 10_000
+    // A hung operation used to park this tab's queue forever (every later
+    // click timing out). Release the tail after a grace period even if the
+    // operation never settles — the risk of one interleaved write is smaller
+    // than a permanently dead control.
     let timer: ReturnType<typeof setTimeout> | undefined
+    let grace: ReturnType<typeof setTimeout> | undefined
     const bounded = Promise.race([
       result,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('MomentQ 内部状态操作超时，请重试')), 10_000)
+        timer = setTimeout(() => reject(new Error('MomentQ 内部状态操作超时，请重试')), CALLER_TIMEOUT_MS)
       }),
     ])
-    const tail = result.then(() => {
-      if (timer !== undefined) clearTimeout(timer)
-    }, () => {
-      if (timer !== undefined) clearTimeout(timer)
-    })
+    const release = (): void => {
+      if (timer !== undefined) { clearTimeout(timer); timer = undefined }
+      if (grace !== undefined) { clearTimeout(grace); grace = undefined }
+    }
+    const tail = Promise.race([
+      result,
+      new Promise<void>(resolve => { grace = setTimeout(resolve, CALLER_TIMEOUT_MS + 5_000) }),
+    ]).then(release, release)
     this.tails.set(tabId, tail)
     void tail.then(() => {
       if (this.tails.get(tabId) === tail) this.tails.delete(tabId)

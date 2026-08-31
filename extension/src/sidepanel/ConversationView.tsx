@@ -70,22 +70,26 @@ function TranscriptionToggle({ state, asrConfigured, onToggle }: {
   onToggle: () => void
 }) {
   if (state === null) return null
-  const blockedBySubtitles = state.subtitleSource !== 'asr'
-    && (state.subtitleSegments?.length ?? 0) > 0
-  if (blockedBySubtitles) return null
   const active = state.transcription === 'active'
   const label = state.transcription === 'inactive'
     ? '开始转录'
     : active ? '暂停转录' : '继续转录'
   const hint = asrConfigured === false ? '（百度云未配置）' : ''
+  // B站字幕存在时按钮仍可用：识别结果会接在已导入字幕之后，用户可以用它
+  // 补齐 B 站只做了一部分的字幕——这正是部分字幕视频的启动入口。
+  const hasSubtitles = state.subtitleSource !== 'asr'
+    && (state.subtitleSegments?.length ?? 0) > 0
+  const subtitleHint = hasSubtitles && state.transcription === 'inactive'
+    ? '（已有 B 站字幕，转录将补充识别缺失部分）'
+    : ''
   return (
     <Button
       variant="ghost"
       size="sm"
-      aria-label={`${label}${hint}`}
+      aria-label={`${label}${hint}${subtitleHint}`}
       title={state.transcriptionError !== undefined
         ? `${label}（${state.transcriptionError}）`
-        : `${label}${hint}`}
+        : `${label}${hint}${subtitleHint}`}
       icon={active ? <IconPauseOutline16 size={16} /> : <IconPlayOutline16 size={16} />}
       onClick={onToggle}
     />

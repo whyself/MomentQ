@@ -202,8 +202,14 @@ function reportDiagnostic(message: string): void {
 
 async function closeOffscreenIfIdle(): Promise<void> {
   if (asrTabId !== null) return
+  // Bounded: a wedged offscreen API must not stall deactivate paths (they
+  // run inside the per-tab queue and would block every later click).
+  const bounded = <T,>(promise: Promise<T>, ms: number): Promise<T | undefined> =>
+    Promise.race([promise, new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), ms))])
   try {
-    if (await chrome.offscreen.hasDocument()) await chrome.offscreen.closeDocument()
+    if (await bounded(chrome.offscreen.hasDocument(), 2_500) === true) {
+      await bounded(chrome.offscreen.closeDocument(), 2_500)
+    }
   } catch { /* the document may already be gone */ }
 }
 
@@ -293,9 +299,9 @@ async function beginTranscription(
 ): Promise<MomentQTabState | null> {
   const initial = await readState(tabId)
   if (initial === null || initial.transcription !== 'inactive') return await readState(tabId)
-  const ownedBySubtitles = initial.subtitleSource !== 'asr'
-    && (initial.subtitleSegments?.length ?? 0) > 0
-  if (ownedBySubtitles) return initial
+  // NOTE: an existing Bilibili subtitle import does NOT block starting.
+  // Bilibili subtitles are often partial; ASR finals append after the
+  // imported segments, so the user can fill the gaps deliberately.
   const run = async (): Promise<MomentQTabState | null> => {
     const settings = await loadSettings()
     // The content directory must exist before the companion persists rows.
@@ -306,9 +312,6 @@ async function beginTranscription(
     return await tabOperations.run(tabId, async () => {
       const current = await readState(tabId)
       if (current === null || current.transcription !== 'inactive') return await readState(tabId)
-      const blockedNow = current.subtitleSource !== 'asr'
-        && (current.subtitleSegments?.length ?? 0) > 0
-      if (blockedNow) return current
       const { transcriptPreview: _preview, transcriptionError: _error, ...withoutAsrUi } = current
       const next: MomentQTabState = {
         ...withoutAsrUi,
