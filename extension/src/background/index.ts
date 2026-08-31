@@ -112,6 +112,79 @@ function sendToOffscreen(message: unknown): void {
   void chrome.runtime.sendMessage(message).catch(() => {})
 }
 
+/** Tabs whose capture session was handed to the offscreen document. */
+const offscreenStarted = new Set<number>()
+
+/** Create the offscreen document when the first session needs it. */
+async function ensureOffscreenDocument(): Promise<boolean> {
+  try {
+    if (await chrome.offscreen.hasDocument()) return true
+  } catch {
+    return false
+  }
+  try {
+    // AUDIO_PLAYBACK lets the document re-play the captured stream so the
+    // user keeps hearing the video while tab capture routes it away.
+    await chrome.offscreen.createDocument({
+      url: 'offscreen.html',
+      reasons: ['USER_MEDIA', 'AUDIO_PLAYBACK'],
+      justification: 'MomentQ 标签页音频转录：在侧边栏关闭后持续采集',
+    })
+    return true
+  } catch {
+    // A concurrent creation reports "already exists" — that is success.
+    return await chrome.offscreen.hasDocument().catch(() => false)
+  }
+}
+
+/** The offscreen listener answers MOMENTQ_ASR_QUERY in-band with owner:'offscreen'. */
+async function waitUntilOffscreenReady(timeoutMs = 5_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const reply = await chrome.runtime.sendMessage({ type: 'MOMENTQ_ASR_QUERY' })
+      .catch(() => null) as AsrSessionMessage | null
+    if (reply !== null && reply.type === 'MOMENTQ_ASR_SESSION' && reply.owner === 'offscreen') return true
+    await new Promise(resolve => setTimeout(resolve, 150))
+  }
+  return false
+}
+
+let clockRelayTabId: number | null = null
+let clockRelayTimer: ReturnType<typeof setInterval> | undefined
+
+/**
+ * The offscreen session anchors transcript rows to the video clock, and the
+ * panel's own clock poll dies with the panel. The background relays the
+ * media clock itself so closing the panel never orphans the anchoring.
+ * (Each tick calls extension APIs, which also keeps the worker alive.)
+ */
+function startClockRelay(tabId: number): void {
+  clockRelayTabId = tabId
+  if (clockRelayTimer !== undefined) return
+  clockRelayTimer = setInterval(() => {
+    const current = clockRelayTabId
+    if (current === null || asrTabId === null) {
+      stopClockRelay()
+      return
+    }
+    void chrome.tabs.sendMessage(current, { type: 'MOMENTQ_GET_CURRENT_VIDEO_TIME' })
+      .then(value => {
+        if (typeof value === 'number' && Number.isFinite(value)) {
+          sendToOffscreen({ type: 'MOMENTQ_ASR_CLOCK', tabId: current, mediaTime: value })
+        }
+      })
+      .catch(() => {})
+  }, 250)
+}
+
+function stopClockRelay(): void {
+  clockRelayTabId = null
+  if (clockRelayTimer !== undefined) {
+    clearInterval(clockRelayTimer)
+    clockRelayTimer = undefined
+  }
+}
+
 /**
  * Browser-side telemetry: forward pipeline failures to the companion's log
  * endpoint so the local console carries the exact in-browser error text
@@ -145,6 +218,8 @@ async function stopAsrSession(targetTabId?: number): Promise<void> {
   const owner = asrTabId
   sendToOffscreen({ type: 'MOMENTQ_ASR_STOP', tabId: owner })
   asrTabId = null
+  offscreenStarted.delete(owner)
+  if (clockRelayTabId === owner) stopClockRelay()
   await closeOffscreenIfIdle()
 }
 
@@ -211,7 +286,11 @@ function armStartAckWatchdog(tabId: number): void {
   startAckTimers.set(tabId, timer)
 }
 
-async function beginTranscription(tabId: number, _streamId: string | undefined): Promise<MomentQTabState | null> {
+async function beginTranscription(
+  tabId: number,
+  streamId: string | undefined,
+  mode: 'auto' | 'panel-only' = 'auto',
+): Promise<MomentQTabState | null> {
   const initial = await readState(tabId)
   if (initial === null || initial.transcription !== 'inactive') return await readState(tabId)
   const ownedBySubtitles = initial.subtitleSource !== 'asr'
@@ -219,12 +298,6 @@ async function beginTranscription(tabId: number, _streamId: string | undefined):
   if (ownedBySubtitles) return initial
   const run = async (): Promise<MomentQTabState | null> => {
     const settings = await loadSettings()
-    // On this Edge build a tab-capture stream id is only consumable in the
-    // context that minted it — background/offscreen-minted ids die in the
-    // panel with "Error starting tab capture" (measured across every
-    // combination). The background therefore never mints: it flips state and
-    // REQUESTS that the panel mint-and-consume under whichever invocation the
-    // user just exercised (menu/shortcut/toolbar all grant it).
     // The content directory must exist before the companion persists rows.
     // (MomentQClient bounds each call, so a wedged Host rejects instead of
     // hanging the click.)
@@ -244,12 +317,33 @@ async function beginTranscription(tabId: number, _streamId: string | undefined):
       await writeState(tabId, next)
       publishState(tabId, next)
       asrTabId = tabId
-      // The panel mints AND consumes the stream id in its own context; it
-      // confirms via MOMENTQ_ASR_SESSION, which the ack watchdog covers.
-      void chrome.runtime.sendMessage({
-        type: 'MOMENTQ_ASR_REQUEST_START',
-        tabId,
-      }).catch(() => {})
+      if (mode === 'auto' && streamId !== undefined
+        && settings.asrProvider !== 'whisper-local'
+        && await ensureOffscreenDocument()
+        && await waitUntilOffscreenReady()) {
+        // The panel minted the id in its click handler (the reliable gesture
+        // surface); the OFFSCREEN document consumes it, so the session — and
+        // transcription — survive closing the side panel. Confirms via
+        // MOMENTQ_ASR_SESSION with owner:'offscreen' (watchdog-covered).
+        offscreenStarted.add(tabId)
+        sendToOffscreen({
+          type: 'MOMENTQ_ASR_START',
+          tabId,
+          streamId,
+          identity: current.context.identity,
+          companionBaseUrl: settings.companionBaseUrl,
+        })
+        startClockRelay(tabId)
+      } else {
+        // No minted id, local Whisper (panel-hosted model), or a retry after
+        // an offscreen failure: the panel mints and consumes in its own
+        // document. Closing the panel ends this kind of session.
+        void chrome.runtime.sendMessage({
+          type: 'MOMENTQ_ASR_REQUEST_START',
+          tabId,
+          consumer: 'panel',
+        }).catch(() => {})
+      }
       armStartAckWatchdog(tabId)
       return await readState(tabId)
     })
@@ -327,6 +421,16 @@ async function applyAsrEvent(message: AsrEventMessage): Promise<void> {
     const fatal = event.code === 'provider-not-configured'
       || event.code === 'companion-disconnected'
       || event.code === 'capture-start'
+    if (event.code === 'capture-start' && offscreenStarted.has(tabId)) {
+      // The offscreen consumer could not start (Edge refusing the handoff).
+      // Fall back ONCE to the panel document, which hosts the session the
+      // old way — closing the panel then ends it, but starting works.
+      offscreenStarted.delete(tabId)
+      stopClockRelay()
+      await deactivateTranscription(tabId, state, `后台会话启动失败（${event.message}），已回退到面板内采集`)
+      void beginTranscription(tabId, undefined, 'panel-only').catch(() => {})
+      return
+    }
     if (fatal) await deactivateTranscription(tabId, state, event.message)
     else {
       reportDiagnostic(`转录错误：${event.message}`)
@@ -372,6 +476,10 @@ async function applyAsrSession(message: AsrSessionMessage): Promise<void> {
   if (message.tabId !== null) {
     asrTabId = message.tabId
     clearStartAckWatchdog(message.tabId)
+    if (message.owner === 'offscreen') {
+      offscreenStarted.add(message.tabId)
+      startClockRelay(message.tabId)
+    }
     return
   }
   // The panel session ended. With stoppedTabId the panel tells us WHICH
@@ -382,7 +490,11 @@ async function applyAsrSession(message: AsrSessionMessage): Promise<void> {
   const tabId = stoppedTabId ?? asrTabId
   if (stoppedTabId === null || asrTabId === stoppedTabId) {
     asrTabId = null
-    if (stoppedTabId !== null) clearStartAckWatchdog(stoppedTabId)
+    if (stoppedTabId !== null) {
+      clearStartAckWatchdog(stoppedTabId)
+      offscreenStarted.delete(stoppedTabId)
+      stopClockRelay()
+    }
   }
   if (tabId !== null) {
     await tabOperations.run(tabId, async () => {
@@ -1049,6 +1161,8 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   publishRevisions.delete(tabId)
   if (asrTabId === tabId) void stopAsrSession(tabId)
   clearStartAckWatchdog(tabId)
+  offscreenStarted.delete(tabId)
+  if (clockRelayTabId === tabId) stopClockRelay()
   void tabOperations.run(tabId, () => writeState(tabId, reduceTabState(null, { type: 'REMOVE_TAB' })))
 })
 

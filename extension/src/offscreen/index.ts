@@ -14,13 +14,14 @@ import type {
   AsrClockMessage,
 } from '../shared/protocol'
 import { isCompanionServerMessage } from '../../../shared/src/companion-protocol'
-import { floatToInt16, int16ToBuffer, isSilent, resampleLinear } from './pcm'
+import { floatToInt16, int16ToBuffer, resampleLinear } from './pcm'
 
 type RunningSession = {
   tabId: number
   stream: MediaStream
   context: AudioContext
   socket: WebSocket
+  monitor: HTMLAudioElement
 }
 
 let session: RunningSession | undefined
@@ -47,6 +48,13 @@ async function startSession(request: AsrStartMessage): Promise<void> {
     await context.audioWorklet.addModule(chrome.runtime.getURL('capture-worklet.js'))
     const source = context.createMediaStreamSource(captureStream)
     const node = new AudioWorkletNode(context, 'momentq-capture')
+
+    // Tab capture routes the tab's audio into this document; without an
+    // explicit re-play the user watches a silent video. An audio element is
+    // audible here (the document is created with the AUDIO_PLAYBACK reason).
+    const monitor = new Audio()
+    monitor.srcObject = captureStream
+    void monitor.play().catch(() => {})
 
     const socket = new WebSocket(toWebSocketUrl(request.companionBaseUrl))
     socket.binaryType = 'arraybuffer'
@@ -82,7 +90,10 @@ async function startSession(request: AsrStartMessage): Promise<void> {
 
     node.port.onmessage = (event: MessageEvent<Float32Array>) => {
       const chunk = event.data
-      if (chunk === undefined || isSilent(chunk)) return
+      if (chunk === undefined) return
+      // Never silence-gate: withholding frames while the video plays (soft
+      // passages, music) starves the Baidu stream and kills the session
+      // with err 4002 — the frames must keep flowing unconditionally.
       if (context.sampleRate !== 16_000) {
         // Defensive fallback when the context could not run at 16 kHz.
         const resampled = resampleLinear(chunk, context.sampleRate, 16_000)
@@ -95,8 +106,8 @@ async function startSession(request: AsrStartMessage): Promise<void> {
     // The worklet is a sink; do not connect it to destination (that would
     // echo tab audio back into the speakers).
 
-    session = { tabId: request.tabId, stream: captureStream, context, socket }
-    postToBackground({ type: 'MOMENTQ_ASR_SESSION', tabId: request.tabId })
+    session = { tabId: request.tabId, stream: captureStream, context, socket, monitor }
+    postToBackground({ type: 'MOMENTQ_ASR_SESSION', tabId: request.tabId, owner: 'offscreen' })
   } catch (error) {
     const raw = error instanceof Error ? error.message : String(error)
     reportEvent(request.tabId, {
@@ -126,8 +137,10 @@ async function stopSession(): Promise<void> {
     current.socket.close()
   } catch { /* the socket may already be gone */ }
   for (const track of current.stream.getTracks()) track.stop()
+  current.monitor.pause()
+  current.monitor.srcObject = null
   await current.context.close().catch(() => {})
-  postToBackground({ type: 'MOMENTQ_ASR_SESSION', tabId: null })
+  postToBackground({ type: 'MOMENTQ_ASR_SESSION', tabId: null, stoppedTabId: current.tabId, owner: 'offscreen' })
 }
 
 function toWebSocketUrl(companionBaseUrl: string): string {
@@ -165,8 +178,8 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
   }
   if (type === 'MOMENTQ_ASR_QUERY') {
     // Answer in-band: the caller awaits this value to learn that the
-    // offscreen listener is alive before sending MOMENTQ_ASR_START.
-    const answer: AsrSessionMessage = { type: 'MOMENTQ_ASR_SESSION', tabId: session?.tabId ?? null }
+    // offscreen listener is alive (and which tab it owns) before use.
+    const answer: AsrSessionMessage = { type: 'MOMENTQ_ASR_SESSION', tabId: session?.tabId ?? null, owner: 'offscreen' }
     sendResponse(answer)
     return false
   }

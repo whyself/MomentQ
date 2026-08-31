@@ -225,7 +225,7 @@ export function App({ subscribe }: {
   const settingsRef = useRef(settings)
   settingsRef.current = settings
   useEffect(() => {
-    const beginPanelCapture = async (tabId: number): Promise<void> => {
+    const beginPanelCapture = async (tabId: number, consumer: 'panel' | undefined): Promise<void> => {
       const current = stateRef.current
       const config = settingsRef.current
       if (current === null) return
@@ -243,24 +243,39 @@ export function App({ subscribe }: {
         }).catch(() => {})
         return
       }
-      try {
-        await startPanelSession({
-          tabId,
-          streamId,
-          identity: current.context.identity,
-          companionBaseUrl: config?.companionBaseUrl ?? 'http://127.0.0.1:3090',
-          engine: config?.asrProvider === 'whisper-local' ? 'whisper' : 'baidu',
-          whisperModel: config?.whisperModel ?? 'base',
-        })
-      } catch {
-        await stopPanelSession()
+      // Local Whisper is hosted by this panel document (model + WebGPU), and
+      // a 'panel' consumer means offscreen already failed for this start.
+      // Everything else hands the minted id to the background, which delivers
+      // it to the offscreen host: closing the panel then never ends the
+      // session.
+      if (consumer === 'panel' || config?.asrProvider === 'whisper-local') {
+        try {
+          await startPanelSession({
+            tabId,
+            streamId,
+            identity: current.context.identity,
+            companionBaseUrl: config?.companionBaseUrl ?? 'http://127.0.0.1:3090',
+            engine: config?.asrProvider === 'whisper-local' ? 'whisper' : 'baidu',
+            whisperModel: config?.whisperModel ?? 'base',
+          })
+        } catch {
+          await stopPanelSession()
+        }
+        return
       }
+      await chrome.runtime.sendMessage({
+        type: 'MOMENTQ_ASR_START_FROM_PANEL',
+        tabId,
+        streamId,
+      }).catch(() => {})
     }
     const listener = (message: unknown, _sender: unknown, sendResponse: (response: unknown) => void): boolean => {
       if (typeof message !== 'object' || message === null) return false
-      const record = message as { type?: unknown; tabId?: unknown }
+      const record = message as { type?: unknown; tabId?: unknown; consumer?: unknown }
       if (record.type === 'MOMENTQ_ASR_REQUEST_START') {
-        if (typeof record.tabId === 'number') void beginPanelCapture(record.tabId)
+        if (typeof record.tabId === 'number') {
+          void beginPanelCapture(record.tabId, record.consumer === 'panel' ? 'panel' : undefined)
+        }
         return false
       }
       // Pause/resume/stop name their target tab: with several windows each

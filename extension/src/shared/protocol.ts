@@ -202,6 +202,30 @@ export type AsrSessionMessage = {
   tabId: number | null
   /** On tabId:null: the tab whose session actually ended (multi-tab handoff). */
   stoppedTabId?: number
+  /** Which extension document owns the capture session. */
+  owner?: 'panel' | 'offscreen'
+}
+
+/** Background → panel: mint a stream id and start (or hand off) a session. */
+export type AsrRequestStartMessage = {
+  type: 'MOMENTQ_ASR_REQUEST_START'
+  tabId: number
+  /**
+   * 'panel' forces the panel document to consume the id itself (offscreen
+   * fallback); absent lets the panel hand the id back for offscreen hosting.
+   */
+  consumer?: 'panel'
+}
+
+/** Background → panel: consume a panel-minted stream id in the panel document. */
+export type AsrStartPanelSessionMessage = {
+  type: 'MOMENTQ_ASR_START_PANEL_SESSION'
+  tabId: number
+  streamId: string
+  identity: BilibiliContext['identity']
+  companionBaseUrl: string
+  engine: 'baidu' | 'whisper'
+  whisperModel?: string
 }
 
 export type AsrEventMessage = {

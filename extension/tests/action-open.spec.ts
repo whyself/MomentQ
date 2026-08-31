@@ -168,18 +168,21 @@ describe('panel-open bridge recovery', () => {
       .not.toMatch(/chrome\.runtime\.sendMessage\(/)
   })
 
-  it('runs the capture session inside the panel document', async () => {
+  it('routes cloud sessions to the offscreen host with a panel fallback', async () => {
     const background = await readFile(join(import.meta.dirname, '..', 'src', 'background', 'index.ts'), 'utf8')
-    // The panel is the ONLY mint-and-consume surface on this Edge build:
-    // background-minted ids die at panel consumption. The background flips
-    // state and requests the start; the panel mints and consumes under the
-    // invocation whatever entry surface the user exercised.
+    // Closing the side panel must not end transcription: cloud-engine
+    // sessions are hosted by the offscreen document (the panel mints the id
+    // in its click handler, offscreen consumes it), with the media clock
+    // relayed by the background so the panel's own poll dying is irrelevant.
     const begin = background.slice(background.indexOf('async function beginTranscription'))
-    expect(begin).toContain("'MOMENTQ_ASR_REQUEST_START'")
-    expect(begin).not.toContain('getMediaStreamId')
+    expect(begin).toContain("'MOMENTQ_ASR_START'")
+    expect(begin).toContain('ensureOffscreenDocument')
+    expect(begin).toContain('startClockRelay(tabId)')
+    expect(begin).toContain("consumer: 'panel'")
     expect(background).toContain('armStartAckWatchdog')
+    expect(background).toContain('offscreenStarted.has(tabId)')
     const app = await readFile(join(import.meta.dirname, '..', 'src', 'sidepanel', 'App.tsx'), 'utf8')
-    expect(app).toContain('MOMENTQ_ASR_REQUEST_START')
+    expect(app).toContain('MOMENTQ_ASR_START_FROM_PANEL')
     expect(app).toContain('getMediaStreamId({ targetTabId: tabId })')
     expect(app).toContain('面板等待后台响应超时')
     expect(app).toContain('setTranscriptionNotice')
@@ -284,15 +287,14 @@ describe('panel-open bridge recovery', () => {
       .not.toMatch(/chrome\.runtime\.sendMessage\(/)
   })
 
-  it('runs the capture session inside the panel document', async () => {
+  it('keeps the panel path as the offscreen fallback with an audible monitor', async () => {
     const background = await readFile(join(import.meta.dirname, '..', 'src', 'background', 'index.ts'), 'utf8')
-    // Edge's offscreen document cannot consume tab-capture streams; the
-    // panel document (which acquired the id under its own gesture) runs the
-    // session and confirms it via MOMENTQ_ASR_SESSION for the watchdog.
+    // When the offscreen consumer refuses the stream on some Edge build, the
+    // start falls back ONCE to a panel-hosted session instead of dying.
     const begin = background.slice(background.indexOf('async function beginTranscription'))
     expect(begin).toContain("'MOMENTQ_ASR_REQUEST_START'")
-    expect(begin).not.toContain("type: 'MOMENTQ_ASR_START'")
     expect(background).toContain('armStartAckWatchdog')
+    expect(background).toContain('已回退到面板内采集')
     const app = await readFile(join(import.meta.dirname, '..', 'src', 'sidepanel', 'App.tsx'), 'utf8')
     expect(app).toContain('startPanelSession')
     expect(app).toContain('面板等待后台响应超时')
@@ -300,6 +302,11 @@ describe('panel-open bridge recovery', () => {
     const session = await readFile(join(import.meta.dirname, '..', 'src', 'sidepanel', 'asr-session.ts'), 'utf8')
     expect(session).toContain('export async function startPanelSession')
     expect(session).toContain('MOMENTQ_ASR_SESSION')
+    const offscreen = await readFile(join(import.meta.dirname, '..', 'src', 'offscreen', 'index.ts'), 'utf8')
+    // Tab capture diverts the tab audio into this document; without an
+    // explicit re-play the user watches a silent video.
+    expect(offscreen).toContain('monitor.srcObject = captureStream')
+    expect(offscreen).toContain('AUDIO_PLAYBACK')
   })
 
   it('never lets a part-1 resolution clobber a player-proven part binding', async () => {
