@@ -1,42 +1,50 @@
 @echo off
+setlocal enabledelayedexpansion
 rem Build MomentQ and package the Windows release zip.
 rem Output: .release\momentq-<version>.zip
-setlocal enabledelayedexpansion
 set "ROOT=%~dp0.."
+if not exist "%OUT%" mkdir "%OUT%"
 set "OUT=%ROOT%\.release"
 set "VERSION="
 set "BUNDLE_VERSION="
 
-for /f "usebackq tokens=*" %%v in (`node -p "require('%ROOT:\=/%/extension/public/manifest.json').version"`) do set "VERSION=%%v"
+for /f "usebackq tokens=*" %%v in (`node -p "require('./extension/public/manifest.json').version"`) do set "VERSION=%%v"
 if "%VERSION%"=="" (
-  echo [错误] 无法读取版本号
+  echo [ERROR] Cannot read the extension version.
   exit /b 1
 )
-for /f "usebackq tokens=*" %%v in (`node -p "require('%ROOT:\=/%/dsh/packages/bundle/package.json').version"`) do set "BUNDLE_VERSION=%%v"
+for /f "usebackq tokens=*" %%v in (`node -p "require('./dsh/packages/bundle/package.json').version"`) do set "BUNDLE_VERSION=%%v"
 if "%BUNDLE_VERSION%"=="" (
-  echo [错误] 无法读取 bundle 版本号
+  echo [ERROR] Cannot read the bundle version.
   exit /b 1
 )
 echo Packaging MomentQ v%VERSION% (bundle v%BUNDLE_VERSION%) ...
 
-rem ── 1) 扩展构建 ────────────────────────────────────────────────
+rem ------------------------------------------------------------------
 pushd "%ROOT%\extension"
-call npm run build || (popd & exit /b 1)
+call npm run build
+if errorlevel 1 (popd & exit /b 1)
 popd
 
-rem ── 2) companion 构建 + 生产依赖（zip 自带 node_modules，目标机零安装）──
+rem ------------------------------------------------------------------
 pushd "%ROOT%\companion"
-call npm run build || (popd & exit /b 1)
-if not exist "node_modules\ws" call npm install --omit=dev --no-audit --no-fund || (popd & exit /b 1)
+call npm run build
+if errorlevel 1 (popd & exit /b 1)
+if not exist "node_modules\ws\package.json" (
+  call npm install --omit=dev --no-audit --no-fund
+  if errorlevel 1 (popd & exit /b 1)
+)
 popd
 
-rem ── 3) DSH bundle 构建 + 打包 tgz（目标机 dsh plugin add 用）──────
+rem ------------------------------------------------------------------
 pushd "%ROOT%\dsh\packages\bundle"
-call npx tsdown || (popd & exit /b 1)
-call npm pack --pack-destination "%OUT%" || (popd & exit /b 1)
+call npm run build
+if errorlevel 1 (popd & exit /b 1)
+call npm pack --pack-destination "%OUT%"
+if errorlevel 1 (popd & exit /b 1)
 popd
 
-rem ── 4) 暂存目录 ───────────────────────────────────────────────
+rem ------------------------------------------------------------------
 set "STAGE=%OUT%\momentq-%VERSION%"
 if exist "%STAGE%" rmdir /s /q "%STAGE%"
 mkdir "%STAGE%\extension"
@@ -51,17 +59,26 @@ xcopy "%ROOT%\companion\node_modules" "%STAGE%\companion\node_modules\" /e /i /q
 copy /y "%ROOT%\companion\package.json" "%STAGE%\companion\" >nul
 copy /y "%ROOT%\scripts\start-local.cmd" "%STAGE%\scripts\" >nul
 if exist "%ROOT%\README.md" copy /y "%ROOT%\README.md" "%STAGE%\" >nul
-if not exist "%STAGE%\companion\node_modules\ws\package.json" (
-  echo [错误] 暂存目录缺少 ws 依赖（符号链接未被解引用），发行包会无法启动 companion。
+
+rem The exact bundle version only: never sweep older tgks from .release.
+if not exist "%OUT%\momentq-dsh-bundle-%BUNDLE_VERSION%.tgz" (
+  echo [ERROR] Bundle package missing: %OUT%\momentq-dsh-bundle-%BUNDLE_VERSION%.tgz
   exit /b 1
 )
 copy /y "%OUT%\momentq-dsh-bundle-%BUNDLE_VERSION%.tgz" "%STAGE%\bundles\" >nul
 
-rem ── 5) 压缩 ──────────────────────────────────────────────────
+rem ws must be a REAL directory in the stage: the companion requires it at
+rem runtime and symlinked pnpm stores break once the zip leaves this machine.
+if not exist "%STAGE%\companion\node_modules\ws\package.json" (
+  echo [ERROR] Staged companion is missing the ws dependency ^(symlink was not dereferenced by xcopy^).
+  exit /b 1
+)
+
+rem ------------------------------------------------------------------
 if exist "%OUT%\momentq-%VERSION%.zip" del "%OUT%\momentq-%VERSION%.zip"
 powershell -NoProfile -Command "Compress-Archive -Path '%STAGE%\*' -DestinationPath '%OUT%\momentq-%VERSION%.zip' -Force"
 if errorlevel 1 (
-  echo [错误] 压缩失败
+  echo [ERROR] Compression failed.
   exit /b 1
 )
 echo.
