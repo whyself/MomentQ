@@ -148,6 +148,31 @@ type Extraction = {
   description: Uint8Array | undefined
 }
 
+/**
+ * Extract the AAC AudioSpecificConfig (the `description` WebCodecs needs)
+ * by scanning the raw bytes for the esds box's DecoderSpecificInfo record
+ * (tag 0x05). mp4box does not surface it on the track info. Measured against
+ * a real Bilibili m4s: the ASC is 2 bytes (0x1210 = AAC-LC 44.1kHz stereo).
+ */
+function extractAudioSpecificConfig(bytes: Uint8Array): Uint8Array | undefined {
+  const limit = Math.min(bytes.length - 4, 4096)
+  for (let index = 4; index < limit; index += 1) {
+    if (bytes[index] === 0x65 && bytes[index + 1] === 0x73 && bytes[index + 2] === 0x64 && bytes[index + 3] === 0x73) {
+      for (let cursor = index + 4; cursor < index + 64 && cursor < bytes.length - 1; cursor += 1) {
+        if (bytes[cursor] === 0x05) {
+          const length = bytes[cursor + 1] ?? 0
+          if (length > 0 && length < 16) {
+            return bytes.slice(cursor + 2, cursor + 2 + length)
+          }
+          return undefined
+        }
+      }
+      return undefined
+    }
+  }
+  return undefined
+}
+
 /** mp4box-driven demux of the DASH m4s audio track. */
 function demuxAudio(fileBytes: ArrayBuffer): Promise<Extraction> {
   return new Promise((resolve, reject) => {
@@ -156,8 +181,8 @@ function demuxAudio(fileBytes: ArrayBuffer): Promise<Extraction> {
     type TrackInfo = {
       id: number
       timescale: number
-      audio?: { sampleRate?: number; channelCount?: number }
-    } & Record<string, unknown>
+      audio?: { sample_rate?: number; channel_count?: number }
+    }
     file.onReady = ((info: { audioTracks: TrackInfo[] }) => {
       const track = info.audioTracks[0]
       if (track === undefined) {
@@ -165,12 +190,9 @@ function demuxAudio(fileBytes: ArrayBuffer): Promise<Extraction> {
         return
       }
       extraction.timescale = track.timescale
-      extraction.sampleRate = track.audio?.sampleRate ?? 0
-      extraction.channels = track.audio?.channelCount ?? 0
-      // AAC-specific: the AudioSpecificConfig rides in the esds box as a
-      // Uint8Array on the track info.
-      const description = (track as Record<string, unknown>).esds
-      if (description instanceof Uint8Array) extraction.description = description
+      extraction.sampleRate = track.audio?.sample_rate ?? 0
+      extraction.channels = track.audio?.channel_count ?? 0
+      extraction.description = extractAudioSpecificConfig(new Uint8Array(fileBytes))
       file.setExtractionOptions(track.id, null, { nbSamples: 1000 })
       file.start()
     }) as never
