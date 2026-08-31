@@ -144,6 +144,13 @@ export type GetCurrentVideoTimeMessage = {
   tabId?: number
 }
 
+/** Panel → background: resolve the DASH audio stream for offline ASR. */
+export type ResolveDashAudioMessage = {
+  type: 'MOMENTQ_RESOLVE_DASH_AUDIO'
+  bvid: string
+  cid: string
+}
+
 /** Panel → content script: seek the active video to an answer's timestamp. */
 export type SeekVideoMessage = {
   type: 'MOMENTQ_SEEK_VIDEO'

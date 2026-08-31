@@ -29,7 +29,7 @@ import { MomentQClient } from '../shared/host-client'
 import { loadSettings } from '../shared/settings-store'
 import { trackNeedsChineseTranslation, transcriptExceedsHost } from '../shared/bilibili-subtitle'
 
-type WorkerRequest = PageContextRuntimeMessage | ResolvePageSnapshotMessage | GetTabStateMessage | ToggleTranscriptionMessage | ToggleCurrentTranscriptionMessage | CaptureCurrentFrameMessage | GetCurrentVideoTimeMessage | ClearAsrSubtitlesMessage | PageSubtitleTracksMessageEnvelope | AsrStartFromPanelMessage | AsrEventMessage | AsrSessionMessage | { type: 'MOMENTQ_ASR_PANEL_CAPTURE_FAILED'; tabId?: unknown; message?: unknown }
+type WorkerRequest = PageContextRuntimeMessage | ResolvePageSnapshotMessage | { type: 'MOMENTQ_RESOLVE_DASH_AUDIO'; bvid: string; cid: string } | GetTabStateMessage | ToggleTranscriptionMessage | ToggleCurrentTranscriptionMessage | CaptureCurrentFrameMessage | GetCurrentVideoTimeMessage | ClearAsrSubtitlesMessage | PageSubtitleTracksMessageEnvelope | AsrStartFromPanelMessage | AsrEventMessage | AsrSessionMessage | { type: 'MOMENTQ_ASR_PANEL_CAPTURE_FAILED'; tabId?: unknown; message?: unknown }
 
 const storageKey = (tabId: number) => `tab:${tabId}`
 // The queue serializes fast local state mutations only. Network calls never
@@ -72,6 +72,9 @@ function requestType(value: unknown): WorkerRequest['type'] | null {
     || value.type === 'MOMENTQ_CAPTURE_CURRENT_FRAME') return value.type
   if (value.type === 'MOMENTQ_GET_CURRENT_VIDEO_TIME') return value.type
   if (value.type === 'MOMENTQ_CLEAR_ASR_SUBTITLES') return value.type
+  if (value.type === 'MOMENTQ_RESOLVE_DASH_AUDIO'
+    && typeof value.bvid === 'string' && value.bvid !== ''
+    && typeof value.cid === 'string' && value.cid !== '') return value.type
   if (value.type === 'PAGE_SUBTITLE_TRACKS' && isPageSubtitleTracksMessageEnvelope(value)) return value.type
   if (value.type === 'MOMENTQ_ASR_START_FROM_PANEL') {
     return typeof value.tabId === 'number' && Number.isSafeInteger(value.tabId) && value.tabId >= 0
@@ -984,7 +987,7 @@ function toggleTranscription(tabId: number): Promise<MomentQTabState | null> {
 async function handleRequest(
   message: unknown,
   sender: chrome.runtime.MessageSender,
-): Promise<MomentQTabState | string | number | { cleared: boolean } | null> {
+): Promise<MomentQTabState | string | number | { cleared: boolean; reason?: string } | { ok: boolean; value?: unknown; error?: { message: string } } | null> {
   const type = requestType(message)
   if (!type || !isRecord(message)) return null
 
@@ -993,6 +996,30 @@ async function handleRequest(
     if (tabId === undefined || !isPageSubtitleTracksMessageEnvelope(message)) return null
     await syncPageSubtitleTracks(tabId, message)
     return await readState(tabId)
+  }
+
+  if (type === 'MOMENTQ_RESOLVE_DASH_AUDIO') {
+    // The side panel cannot fetch api.bilibili.com (CORS); the worker's
+    // host_permissions cover it. Anonymous access returns DASH with fnval=16.
+    const request = message as { bvid?: unknown; cid?: unknown }
+    const bvid = typeof request.bvid === 'string' ? request.bvid : ''
+    const cid = typeof request.cid === 'string' ? request.cid : ''
+    try {
+      const response = await fetch(`https://api.bilibili.com/x/player/playurl?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(cid)}&fnval=16`)
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const payload = await response.json() as {
+        code?: number
+        data?: { dash?: { audio?: Array<{ baseUrl?: string; base_url?: string; codecs?: string }> } }
+      }
+      if (payload.code !== 0) throw new Error(`B 站接口返回 ${String(payload.code)}`)
+      const streams = payload.data?.dash?.audio ?? []
+      const picked = streams[streams.length - 1] ?? streams[0]
+      const baseUrl = picked?.baseUrl ?? picked?.base_url
+      if (baseUrl === undefined || baseUrl === '') throw new Error('响应中没有音频流')
+      return { ok: true, value: { baseUrl, codec: picked?.codecs ?? 'mp4a.40.2' } }
+    } catch (error) {
+      return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } }
+    }
   }
 
   if (type === 'MOMENTQ_ASR_START_FROM_PANEL') {

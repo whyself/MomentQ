@@ -10,10 +10,8 @@ import * as MP4Box from 'mp4box'
 export type DashAudio = {
   baseUrl: string
   codec: string
-  /** AudioStreamBasicDescription: sample rate the decoder must run at. */
   sampleRate: number
   channels: number
-  /** Raw opus/aac config bytes for AudioDecoder.description, if present. */
   description: Uint8Array | undefined
 }
 
@@ -34,36 +32,29 @@ type SampleLike = {
   is_sync: boolean
 }
 
+
 /**
- * Pull the DASH audio selection for a cid through Bilibili's playurl API
- * (anonymous access works; fnval=16 asks for DASH).
+ * Resolve the DASH audio via the BACKGROUND service worker: it carries
+ * host_permissions for api.bilibili.com, while this panel document's fetch
+ * is subject to CORS (the reported "Failed to fetch").
  */
-export async function fetchDashAudio(
-  bvid: string,
-  cid: string,
-  fetcher: typeof fetch = fetch,
-): Promise<DashAudio> {
-  const url = `https://api.bilibili.com/x/player/playurl?bvid=${encodeURIComponent(bvid)}&cid=${encodeURIComponent(cid)}&fnval=16`
-  const response = await fetcher(url, { credentials: 'include' })
-  if (!response.ok) throw new Error(`Bilibili playurl HTTP ${response.status}`)
-  const payload = await response.json() as {
-    code?: number
-    data?: {
-      dash?: {
-        audio?: Array<{ baseUrl?: string; base_url?: string; codecs?: string } >
-      }
-    }
+export async function fetchDashAudio(bvid: string, cid: string): Promise<DashAudio> {
+  const reply = await chrome.runtime.sendMessage({
+    type: 'MOMENTQ_RESOLVE_DASH_AUDIO',
+    bvid,
+    cid,
+  }) as { ok?: unknown; value?: unknown; error?: { message?: unknown } } | null
+  if (reply === null || reply.ok !== true || typeof reply.value !== 'object' || reply.value === null) {
+    const detail = reply?.error && typeof reply.error.message === 'string' ? reply.error.message : '未知错误'
+    throw new Error(`获取音频地址失败：${detail}`)
   }
-  if (payload.code !== 0) throw new Error(`Bilibili playurl code ${String(payload.code)}`)
-  const streams = payload.data?.dash?.audio ?? []
-  // Prefer the medium-bandwidth m4s track (first entry is usually the
-  // 30216/30280 audio tier; quality is irrelevant for ASR).
-  const picked = streams[streams.length - 1] ?? streams[0]
-  const baseUrl = picked?.baseUrl ?? picked?.base_url
-  if (baseUrl === undefined || baseUrl === '') throw new Error('Bilibili playurl returned no audio stream')
+  const value = reply.value as { baseUrl?: unknown; codec?: unknown }
+  if (typeof value.baseUrl !== 'string' || value.baseUrl === '') {
+    throw new Error('获取音频地址失败：响应缺少音频流')
+  }
   return {
-    baseUrl,
-    codec: picked?.codecs ?? 'mp4a.40.2',
+    baseUrl: value.baseUrl,
+    codec: typeof value.codec === 'string' ? value.codec : 'mp4a.40.2',
     sampleRate: 44_100,
     channels: 2,
     description: undefined,

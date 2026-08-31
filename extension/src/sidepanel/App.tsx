@@ -248,7 +248,12 @@ export function App({ subscribe }: {
       }
     })()
   }
-  const cancelPreTranscription = (): void => { preTranscribeCancel.current?.() }
+  const cancelPreTranscription = (): void => {
+    // Running: cancel the pipeline (its catch clears the banner). Failed or
+    // finished: the token is gone, so dismissing is a plain state clear.
+    if (preTranscribeCancel.current !== null) preTranscribeCancel.current?.()
+    else setPreTranscribe(null)
+  }
 
   // One toggle at a time: a double-click must not ride two background
   // toggles and land on the opposite of what the user wanted.
