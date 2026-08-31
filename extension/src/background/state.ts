@@ -12,10 +12,15 @@ export type TabStateAction =
 
 export class TabOperationQueue {
   private readonly tails = new Map<number, Promise<void>>()
+  /** The in-flight operation per tab, for timeout diagnostics. */
+  private readonly running = new Map<number, { label: string; startedAt: number }>()
 
-  run<T>(tabId: number, operation: () => Promise<T>): Promise<T> {
+  run<T>(tabId: number, label: string, operation: () => Promise<T>): Promise<T> {
     const previous = this.tails.get(tabId) ?? Promise.resolve()
-    const result = previous.then(() => operation())
+    const result = previous.then(() => {
+      this.running.set(tabId, { label, startedAt: Date.now() })
+      return operation()
+    })
     // The timeout bounds how long a CALLER waits, not the operation itself:
     // releasing the queue while the previous operation is still writing let
     // two operations interleave read-modify-write on the same tab state.
@@ -32,10 +37,17 @@ export class TabOperationQueue {
     const bounded = Promise.race([
       result,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('MomentQ 内部状态操作超时，请重试')), CALLER_TIMEOUT_MS)
+        timer = setTimeout(() => {
+          const current = this.running.get(tabId)
+          const detail = current === undefined
+            ? '（队列空闲——等待前一个未结算操作）'
+            : `正在运行「${current.label}」已 ${Math.round((Date.now() - current.startedAt) / 100) / 10}s`
+          reject(new Error(`MomentQ 内部状态操作超时，${detail}`))
+        }, CALLER_TIMEOUT_MS)
       }),
     ])
     const release = (): void => {
+      this.running.delete(tabId)
       if (timer !== undefined) { clearTimeout(timer); timer = undefined }
       if (grace !== undefined) { clearTimeout(grace); grace = undefined }
     }

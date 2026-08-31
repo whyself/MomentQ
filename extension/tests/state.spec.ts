@@ -106,13 +106,13 @@ describe('TabOperationQueue', () => {
     const firstMayFinish = new Promise<void>(resolve => { releaseFirst = resolve })
     let state = reduceTabState(null, { type: 'SET_CONTEXT', tabId: 7, context: firstContext })
 
-    const contextUpdate = queue.run(7, async () => {
+    const contextUpdate = queue.run(7, 'contextUpdate', async () => {
       await firstMayFinish
       state = reduceTabState(state, {
         type: 'SET_CONTEXT', tabId: 7, context: sameIdentityUpdated,
       })
     })
-    const toggle = queue.run(7, async () => {
+    const toggle = queue.run(7, 'toggle', async () => {
       state = reduceTabState(state, { type: 'TOGGLE_TRANSCRIPTION' })
     })
 
@@ -157,8 +157,8 @@ describe('TabOperationQueue', () => {
     const queue = new TabOperationQueue()
     let release: (() => void) | undefined
     const gate = new Promise<void>(resolve => { release = resolve })
-    const blocked = queue.run(1, () => gate)
-    await expect(queue.run(2, async () => 'ready')).resolves.toBe('ready')
+    const blocked = queue.run(1, 'gate', () => gate)
+    await expect(queue.run(2, 'ready-op', async () => 'ready')).resolves.toBe('ready')
     release?.()
     await blocked
   })

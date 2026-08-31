@@ -44,7 +44,7 @@ const publishRevisions = new Map<number, number>()
 async function writeProbeResult(tabId: number, bvid: string, cid: string, diagnostic: string): Promise<void> {
   // The build tag lets a screenshot prove which version produced the line.
   const version = chrome.runtime.getManifest().version
-  await tabOperations.run(tabId, async () => {
+  await tabOperations.run(tabId, 'writeProbeResult', async () => {
     const state = await readState(tabId)
     if (state?.context.kind !== 'vod'
       || state.context.identity.bvid !== bvid
@@ -281,7 +281,7 @@ function armStartAckWatchdog(tabId: number): void {
     void chrome.runtime.sendMessage({ type: 'MOMENTQ_ASR_QUERY' }).then(reply => {
       const sessionTab = (reply as { tabId?: number } | null)?.tabId
       if (asrTabId === tabId && sessionTab !== tabId) {
-        void tabOperations.run(tabId, async () => {
+        void tabOperations.run(tabId, 'armStartAckWatchdog', async () => {
           const state = await readState(tabId)
           if (state === null || state.transcription === 'inactive') return
           await deactivateTranscription(tabId, state, '采集会话未确认启动，请重试')
@@ -309,7 +309,7 @@ async function beginTranscription(
     // hanging the click.)
     const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
     await client.ensureContent({ identity: initial.context.identity, metadata: initial.context.metadata })
-    return await tabOperations.run(tabId, async () => {
+    return await tabOperations.run(tabId, 'beginTranscription', async () => {
       const current = await readState(tabId)
       if (current === null || current.transcription !== 'inactive') return await readState(tabId)
       const { transcriptPreview: _preview, transcriptionError: _error, ...withoutAsrUi } = current
@@ -361,7 +361,7 @@ async function beginTranscription(
     const reason = error instanceof Error ? error.message : String(error)
     reportDiagnostic(`开始转录失败：${reason}`)
     const state = await readState(tabId) ?? initial
-    return await tabOperations.run(tabId, () => deactivateTranscription(
+    return await tabOperations.run(tabId, 'deactivateTranscription', () => deactivateTranscription(
       tabId,
       state,
       `无法开始转录（${reason}）。请重试或在 MomentQ 侧边栏再次点击。`,
@@ -372,7 +372,7 @@ async function beginTranscription(
 async function applyAsrEvent(message: AsrEventMessage): Promise<void> {
   const tabId = message.tabId
   if (!isCompanionServerMessage(message.event)) return
-  await tabOperations.run(tabId, async () => {
+  await tabOperations.run(tabId, 'applyAsrEvent', async () => {
     const state = await readState(tabId)
     // Events from an ended session (stale finals after a video switch, a
     // socket draining after a stop) must never touch the fresh state.
@@ -500,7 +500,7 @@ async function applyAsrSession(message: AsrSessionMessage): Promise<void> {
     }
   }
   if (tabId !== null) {
-    await tabOperations.run(tabId, async () => {
+    await tabOperations.run(tabId, 'applyAsrSession', async () => {
       const state = await readState(tabId)
       if (state === null || state.transcription === 'inactive') return
       // An intentional stop is not an error: state clears without one.
@@ -532,7 +532,7 @@ async function recoverOrphanedTranscription(): Promise<void> {
     if (tabId === undefined || tabId === asrTabId) continue
     const state = await readState(tabId)
     if (state === null || state.transcription === 'inactive') continue
-    await tabOperations.run(tabId, async () => {
+    await tabOperations.run(tabId, 'recoverOrphanedTranscription', async () => {
       const current = await readState(tabId)
       if (current === null || current.transcription === 'inactive') return
       await deactivateTranscription(tabId, current)
@@ -583,7 +583,7 @@ async function applyContextUnlocked(tabId: number, context: BilibiliContext | nu
 }
 
 function applyContext(tabId: number, context: BilibiliContext | null): Promise<MomentQTabState | null> {
-  return tabOperations.run(tabId, () => applyContextUnlocked(tabId, context))
+  return tabOperations.run(tabId, 'applyContextUnlocked', () => applyContextUnlocked(tabId, context))
 }
 
 const verifiedSubtitleIdentities = new Set<string>()
@@ -649,7 +649,7 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
       // No trusted track from the unsigned channel: drop any previously
       // imported panel segments for this identity so poisoned tracks do not
       // linger in the display until the next rebind.
-      await tabOperations.run(tabId, async () => {
+      await tabOperations.run(tabId, 'syncBilibiliSubtitle', async () => {
         const state = await readState(tabId)
         if (state?.context.kind !== 'vod'
           || state.context.identity.bvid !== bvid
@@ -716,7 +716,7 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
       await client.ensureContent({ identity: context.identity, metadata: context.metadata })
       await client.syncTranscript(context.identity, 'bilibili', segments)
     }
-    await tabOperations.run(tabId, async () => {
+    await tabOperations.run(tabId, 'syncBilibiliSubtitle', async () => {
       const state = await readState(tabId)
       if (state?.context.kind !== 'vod'
         || state.context.identity.bvid !== bvid
@@ -826,7 +826,7 @@ async function syncPageSubtitleTracks(tabId: number, message: PageSubtitleTracks
       if (!persistedAsr) {
         await client.ensureContent({ identity: context.identity, metadata: context.metadata })
         await client.syncTranscript(context.identity, 'bilibili', [])
-        await tabOperations.run(tabId, async () => {
+        await tabOperations.run(tabId, 'syncPageSubtitleTracks', async () => {
           const current = await readState(tabId)
           if (current?.context.kind !== 'vod'
             || current.context.identity.bvid !== message.payload.bvid
@@ -859,7 +859,7 @@ async function syncPageSubtitleTracks(tabId: number, message: PageSubtitleTracks
     if (transcriptExceedsHost(segments, state.context.metadata.durationSeconds)) continue
     await client.ensureContent({ identity: context.identity, metadata: context.metadata })
     await client.syncTranscript(context.identity, 'bilibili', segments)
-    await tabOperations.run(tabId, async () => {
+    await tabOperations.run(tabId, 'syncPageSubtitleTracks', async () => {
       const current = await readState(tabId)
       if (current?.context.kind !== 'vod'
         || current.context.identity.bvid !== message.payload.bvid
@@ -972,7 +972,7 @@ async function toggleTranscriptionUnlocked(tabId: number): Promise<MomentQTabSta
 }
 
 function toggleTranscription(tabId: number): Promise<MomentQTabState | null> {
-  return tabOperations.run(tabId, () => toggleTranscriptionUnlocked(tabId))
+  return tabOperations.run(tabId, 'toggleTranscriptionUnlocked', () => toggleTranscriptionUnlocked(tabId))
 }
 
 async function handleRequest(
@@ -1010,7 +1010,7 @@ async function handleRequest(
     const failure = message as { tabId?: unknown; message?: unknown }
     const tabId = failure.tabId
     if (typeof tabId === 'number' && Number.isSafeInteger(tabId)) {
-      await tabOperations.run(tabId, async () => {
+      await tabOperations.run(tabId, 'handleRequest', async () => {
         const state = await readState(tabId)
         if (state === null || state.transcription === 'inactive') return
         await deactivateTranscription(tabId, state,
@@ -1127,7 +1127,7 @@ async function handleRequest(
     // The archive was just wiped in the Host; drop the tab's in-memory ASR
     // subtitle state so the ticker stops showing cleared rows. A live
     // transcription session keeps its rows (it would re-persist anyway).
-    return await tabOperations.run(tabId, async () => {
+    return await tabOperations.run(tabId, 'handleRequest', async () => {
       const state = await readState(tabId)
       if (state === null || state.subtitleSource !== 'asr' || state.transcription !== 'inactive') {
         return { cleared: false }
@@ -1166,7 +1166,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   clearStartAckWatchdog(tabId)
   offscreenStarted.delete(tabId)
   if (clockRelayTabId === tabId) stopClockRelay()
-  void tabOperations.run(tabId, () => writeState(tabId, reduceTabState(null, { type: 'REMOVE_TAB' })))
+  void tabOperations.run(tabId, 'writeState', () => writeState(tabId, reduceTabState(null, { type: 'REMOVE_TAB' })))
 })
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
