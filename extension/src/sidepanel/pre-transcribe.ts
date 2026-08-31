@@ -126,28 +126,29 @@ export async function decodeAudioToPcm16k(
     // allocation must account for the source's channel count — allocating
     // frames*4 for a stereo source still fails because both PLANES count.
     // Allocate from the format's own frame size and read plane 0 only.
-    const sourceFormat = audio.format ?? 'f32-planar'
-    const bytesPerSample = sourceFormat.startsWith('f32') ? 4 : 2
     const channels = Math.max(1, audio.numberOfChannels)
-    // Planar layouts store one full plane per channel; interleaved (u16/f32)
-    // stores frames * channels in the single plane.
-    const planeFloats = sourceFormat.includes('planar')
-      ? frames
-      : frames * channels
-    const target = new Float32Array(planeFloats)
-    audio.copyTo(target, { planeIndex: 0, format: 'f32' })
-    // Downmix to mono by averaging planes when the source is multi-channel;
-    // ASR does not need stereo.
-    let mono = target
-    if (channels > 1 && sourceFormat.includes('planar')) {
-      mono = new Float32Array(frames)
-      for (let channel = 0; channel < channels; channel += 1) {
-        const plane = new Float32Array(planeFloats)
+    // Bulletproof copy: allocationSize() tells us the EXACT byte count the
+    // AudioData requires for plane 0 as f32 — no format arithmetic to get
+    // wrong. (copyTo's destination is sized in bytes.)
+    const planeBytes = audio.allocationSize({ planeIndex: 0, format: 'f32' })
+    const copyTarget = new Float32Array(planeBytes / 4)
+    audio.copyTo(copyTarget, { planeIndex: 0, format: 'f32' })
+    let mono: Float32Array
+    if (channels > 1) {
+      mono = new Float32Array(copyTarget.length)
+      for (let channel = 1; channel < channels; channel += 1) {
+        const plane = new Float32Array(audio.allocationSize({ planeIndex: channel, format: 'f32' }) / 4)
+        if (plane.length !== copyTarget.length) break // malformed planes: channel 0 only
         audio.copyTo(plane, { planeIndex: channel, format: 'f32' })
-        for (let frame = 0; frame < planeFloats; frame += 1) {
-          mono[frame] = (mono[frame] ?? 0) + (plane[frame] ?? 0) / channels
+        for (let frame = 0; frame < plane.length; frame += 1) {
+          mono[frame] = (mono[frame] ?? 0) + (plane[frame] ?? 0)
         }
       }
+      for (let frame = 0; frame < mono.length; frame += 1) {
+        mono[frame] = (mono[frame] ?? 0) / channels
+      }
+    } else {
+      mono = copyTarget
     }
     audio.close()
     chunks.push(resample(mono, extraction.sampleRate || dash.sampleRate, 16_000))
