@@ -291,10 +291,12 @@ const markdownCodeLabels = { copyLabel: '复制', copiedLabel: '已复制' }
 
 /**
  * Bracketed video timestamps in answers become seek buttons: single points
- * ([MM:SS], [H:MM:SS]) and ranges ([MM:SS–MM:SS]) seek to their start. Bare
- * forms never match, so ratios like 16:9 stay inert prose.
+ * ([MM:SS], [H:MM:SS]) and ranges seek to their start. The model varies the
+ * range separator freely (dash, comma, 、, ~, 至/到 — measured in the wild:
+ * "[07:44, 07:55]"), so all of them are accepted. Bare forms never match,
+ * so ratios like 16:9 stay inert prose.
  */
-const TIMESTAMP_PATTERN = /\[(\d{1,2}:[0-5]?\d(?::[0-5]?\d)?)(?:\s*[–—-]\s*\d{1,2}:[0-5]?\d(?::[0-5]?\d)?)?\]/g
+const TIMESTAMP_PATTERN = /\[(\d{1,2}:[0-5]?\d(?::[0-5]?\d)?)(?:\s*[,\-–—，、~至到]\s*\d{1,2}:[0-5]?\d(?::[0-5]?\d)?)?\]/g
 
 function timestampSeconds(value: string): number | null {
   const parts = value.split(':').map(Number)
