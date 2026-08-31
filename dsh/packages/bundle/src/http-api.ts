@@ -3,6 +3,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
+import type { EncodedImageAttachment } from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { z } from 'zod'
 import { contentIdentitySchema, contentMetadataSchema, MomentQStateNotFoundError } from './state.ts'
@@ -10,7 +11,7 @@ import { contentIdentitySchema, contentMetadataSchema, MomentQStateNotFoundError
 export const name = 'momentq-http-api'
 export const inject = ['momentq', 'webServer', 'credentials']
 
-const MAX_BODY_BYTES = 1024 * 1024
+const MAX_BODY_BYTES = 96 * 1024 * 1024
 
 const ensureContentParams = z.object({
   identity: contentIdentitySchema,
@@ -23,9 +24,18 @@ const replaceParams = z.object({
   identity: contentIdentitySchema,
   sessionInstructions: z.string().max(4000).optional(),
 }).strict()
+// Images ride inline as canonical base64 (no data: prefix), mirroring the
+// web composer's one-shot admission: the host persists them through the
+// attachment store and references them from the message.
+const encodedImageParams = z.object({
+  mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif']),
+  data: z.string().min(1),
+  name: z.string().max(255).optional(),
+}).strict()
 const submitMessageParams = z.object({
   identity: contentIdentitySchema,
   text: z.string().trim().min(1).max(32_000),
+  images: z.array(encodedImageParams).max(20).optional(),
 }).strict()
 const syncTranscriptParams = z.object({
   identity: contentIdentitySchema,
@@ -37,6 +47,11 @@ const syncTranscriptParams = z.object({
   }).strict().refine(segment => segment.end >= segment.start)).max(100_000),
 }).strict()
 const streamMessageParams = submitMessageParams
+
+/** Zod optionals carry explicit undefined; the wire type does not. */
+function toEncodedImages(images: z.infer<typeof encodedImageParams>[] | undefined): EncodedImageAttachment[] | undefined {
+  return images?.map(({ mediaType, data, name }) => ({ mediaType, data, ...(name === undefined ? {} : { name }) }))
+}
 const setModelApiKeyParams = z.object({
   apiKey: z.string()
     .min(1)
@@ -190,7 +205,7 @@ export function apply(ctx: Context): void {
           }
           case 'submitMessage': {
             const params = submitMessageParams.parse(request.params)
-            value = await ctx.momentq.submitMessage(params.identity, params.text)
+            value = await ctx.momentq.submitMessage(params.identity, params.text, toEncodedImages(params.images))
             break
           }
           case 'syncTranscript': {
@@ -315,7 +330,7 @@ export function apply(ctx: Context): void {
           'x-content-type-options': 'nosniff',
           ...corsHeaders(responseOrigin),
         })
-        await ctx.momentq.streamMessage(params.identity, params.text, (event) => {
+        await ctx.momentq.streamMessage(params.identity, params.text, toEncodedImages(params.images), (event) => {
           if (!res.destroyed) res.write(`${JSON.stringify(event)}\n`)
         }, abort.signal)
         res.end()

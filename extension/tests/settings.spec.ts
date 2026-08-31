@@ -10,7 +10,7 @@ describe('extension settings', () => {
       version: 2,
       hostBaseUrl: 'http://127.0.0.1:3182',
       companionBaseUrl: 'http://127.0.0.1:3090',
-      asrProvider: 'baidu',
+      asrProvider: 'whisper-local',
       whisperModel: 'base',
       subtitleMode: 'append',
       autoConnect: true,

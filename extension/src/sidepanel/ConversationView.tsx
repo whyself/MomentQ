@@ -188,21 +188,21 @@ function SubtitleScroll({ rows, preview, currentIndex }: {
 
 type FrameAttachment = { dataUrl: string; name: string }
 
-function Composer({ available, draft, pending, hero, frame, onCaptureFrame, onPasteFrame, onRemoveFrame, onDraftChange, onSubmit }: {
+function Composer({ available, draft, pending, hero, frames, onCaptureFrame, onPasteFrame, onRemoveFrame, onDraftChange, onSubmit }: {
   available: boolean
   draft: string
   pending: boolean
   hero: boolean
-  frame: FrameAttachment | null
+  frames: FrameAttachment[]
   onCaptureFrame: () => void
   onPasteFrame: (event: ClipboardEvent<HTMLTextAreaElement>) => void
-  onRemoveFrame: () => void
+  onRemoveFrame: (index: number) => void
   onDraftChange: (value: string) => void
   onSubmit: () => void
 }) {
   const placeholder = available ? '针对当前视频或直播提问' : '请先打开支持的 B 站视频或直播页面'
   const disabled = !available || pending
-  const submitDisabled = disabled || (draft.trim() === '' && frame === null)
+  const submitDisabled = disabled || (draft.trim() === '' && frames.length === 0)
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return
     event.preventDefault()
@@ -212,18 +212,22 @@ function Composer({ available, draft, pending, hero, frame, onCaptureFrame, onPa
     <div className={`${inputCss.root} ${hero ? inputCss.hero : ''}`}>
       <div className={inputCss.card} data-composer-card>
         <div className={inputCss.scroll}>
-          {frame !== null && (
-            <div className={inputCss.accessory} aria-label="待发送图片">
-              <img src={frame.dataUrl} alt={frame.name} style={{ maxWidth: '160px', maxHeight: '90px', borderRadius: '8px' }} />
-              <button
-                type="button"
-                className={modalCss.close}
-                aria-label="移除图片"
-                title="移除图片"
-                onClick={onRemoveFrame}
-              >
-                <IconCloseOutline16 size={14} />
-              </button>
+          {frames.length > 0 && (
+            <div className={inputCss.accessory} aria-label="待发送图片" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              {frames.map((frame, index) => (
+                <div key={`${frame.name}-${index}`} style={{ position: 'relative', display: 'inline-block' }}>
+                  <img src={frame.dataUrl} alt={frame.name} style={{ maxWidth: '160px', maxHeight: '90px', borderRadius: '8px' }} />
+                  <button
+                    type="button"
+                    className={modalCss.close}
+                    aria-label={`移除图片 ${index + 1}`}
+                    title="移除图片"
+                    onClick={() => onRemoveFrame(index)}
+                  >
+                    <IconCloseOutline16 size={14} />
+                  </button>
+                </div>
+              ))}
             </div>
           )}
           <div className={inputCss.grow}>
@@ -274,7 +278,9 @@ function UserEntry({ entry }: {
   return (
     <div className={messageCss.userRow}>
       <div className={messageCss.userStack}>
-        {entry.image !== undefined && <img src={entry.image} alt="当前画面" style={{ maxWidth: '240px', borderRadius: '12px' }} />}
+        {(entry.images ?? (entry.image === undefined ? [] : [entry.image])).map((src, index) => (
+          <img key={index} src={src} alt={`附件 ${index + 1}`} style={{ maxWidth: '240px', borderRadius: '12px' }} />
+        ))}
         {body !== '' && <div className={messageCss.bubble}>{body}</div>}
         {stamp !== null && <div className="momentq-user-stamp">提问于 {stamp}</div>}
       </div>
@@ -290,6 +296,7 @@ type ConversationEntry = {
   streamKey?: string
   blocks?: Readonly<Record<number, string>>
   image?: string
+  images?: string[]
 }
 
 const markdownCodeLabels = { copyLabel: '复制', copiedLabel: '已复制' }
@@ -469,6 +476,7 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
   onLoadHistory: (state: MomentQTabState) => Promise<ConversationHistoryEntry[]>
   onSubmit: (
     text: string,
+    images: readonly FrameAttachment[],
     onEvent: (event: MessageStreamEvent) => void,
     signal: AbortSignal,
   ) => Promise<SubmitMessageResult>
@@ -479,7 +487,7 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
   onClearSession?: () => Promise<void>
 }) {
   const [draft, setDraft] = useState('')
-  const [frame, setFrame] = useState<FrameAttachment | null>(null)
+  const [frames, setFrames] = useState<FrameAttachment[]>([])
   const [entries, setEntries] = useState<ConversationEntry[]>([])
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -501,7 +509,7 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
 
   useEffect(() => {
     if (capturedFrame !== null && capturedFrame !== undefined) {
-      setFrame({ dataUrl: capturedFrame, name: `momentq-frame-${Date.now()}.png` })
+      setFrames(current => [...current, { dataUrl: capturedFrame, name: `momentq-frame-${Date.now()}.png` }])
     }
   }, [capturedFrame])
 
@@ -569,7 +577,7 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
   const captureFrame = (): void => {
     if (state === null || pending) return
     void onCaptureFrame().then(dataUrl => {
-      if (dataUrl !== null) setFrame({ dataUrl, name: `momentq-frame-${Date.now()}.png` })
+      if (dataUrl !== null) setFrames(current => [...current, { dataUrl, name: `momentq-frame-${Date.now()}.png` }])
       else setError('无法读取视频当前帧，请先播放视频并重试')
     }).catch((reason: unknown) => {
       setError(`读取当前帧失败：${reason instanceof Error ? reason.message : String(reason)}`)
@@ -577,18 +585,22 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
   }
 
   const pasteFrame = (event: ClipboardEvent<HTMLTextAreaElement>): void => {
-    const file = Array.from(event.clipboardData.items)
+    const files = Array.from(event.clipboardData.items)
       .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
       .map(item => item.getAsFile())
-      .find((item): item is File => item !== null)
-    if (file === undefined) return
+      .filter((item): item is File => item !== null)
+    if (files.length === 0) return
     event.preventDefault()
-    const reader = new FileReader()
-    reader.onload = () => {
-      if (typeof reader.result === 'string') setFrame({ dataUrl: reader.result, name: file.name || `momentq-image-${Date.now()}.png` })
+    for (const file of files) {
+      const reader = new FileReader()
+      reader.onload = () => {
+        if (typeof reader.result === 'string') {
+          setFrames(current => [...current, { dataUrl: reader.result as string, name: file.name || `momentq-image-${Date.now()}.png` }])
+        }
+      }
+      reader.onerror = () => setError('粘贴的图片读取失败，请重试')
+      reader.readAsDataURL(file)
     }
-    reader.onerror = () => setError('粘贴的图片读取失败，请重试')
-    reader.readAsDataURL(file)
   }
 
   useEffect(() => {
@@ -603,14 +615,15 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
 
   const submit = (): void => {
     const text = draft.trim()
-    if (state === null || pending || (text === '' && frame === null)) return
+    if (state === null || pending || (text === '' && frames.length === 0)) return
     const requestGeneration = generation.current
     const localId = `local:${String(Date.now())}`
     const controller = new AbortController()
     activeRequest.current?.abort()
     activeRequest.current = controller
     setDraft('')
-    setFrame(null)
+    const sentImages = frames
+    setFrames([])
     setError(null)
     setPending(true)
     const sentText = withVideoTimeSuffix(text, playbackStamp(playbackTime))
@@ -618,7 +631,7 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
       id: localId,
       role: 'user',
       text: sentText,
-      ...(frame === null ? {} : { image: frame.dataUrl }),
+      ...(sentImages.length === 0 ? {} : { images: sentImages.map(frame => frame.dataUrl) }),
     }])
     const onEvent = (event: MessageStreamEvent): void => {
       if (generation.current !== requestGeneration || controller.signal.aborted) return
@@ -671,7 +684,7 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
         })
       }
     }
-    void onSubmit(text, onEvent, controller.signal).then(() => {
+    void onSubmit(text, sentImages, onEvent, controller.signal).then(() => {
       if (generation.current !== requestGeneration || controller.signal.aborted) return
     }).catch((reason: unknown) => {
       if (generation.current !== requestGeneration || controller.signal.aborted) return
@@ -762,10 +775,10 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
             draft={draft}
             pending={pending}
             hero={!active}
-            frame={frame}
+            frames={frames}
             onCaptureFrame={captureFrame}
             onPasteFrame={pasteFrame}
-            onRemoveFrame={() => { setFrame(null) }}
+            onRemoveFrame={index => { setFrames(current => current.filter((_, i) => i !== index)) }}
             onDraftChange={setDraft}
             onSubmit={submit}
           />

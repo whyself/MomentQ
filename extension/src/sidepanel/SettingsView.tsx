@@ -269,9 +269,16 @@ function AsrSection({ draft, setDraft, saving, saveError, onSave }: {
   const [savingCredentials, setSavingCredentials] = useState(false)
   const [credentialError, setCredentialError] = useState<string | null>(null)
 
+  // The companion probe only matters for the Baidu cloud engine; the default
+  // local Whisper needs no companion, and probing it anyway showed a
+  // misleading "无法连接本地 companion" on zero-config installs.
   useEffect(() => {
     let active = true
     setCredentialErrorText(null)
+    if (draft.asrProvider !== 'baidu') {
+      setCredentialView(null)
+      return () => { active = false }
+    }
     // Debounce: this effect keys on the address field, so every keystroke
     // used to fire a live /config request while the user was still typing.
     const timer = window.setTimeout(() => {
@@ -289,7 +296,7 @@ function AsrSection({ draft, setDraft, saving, saveError, onSave }: {
       active = false
       window.clearTimeout(timer)
     }
-  }, [draft.companionBaseUrl])
+  }, [draft.companionBaseUrl, draft.asrProvider])
 
   // Saved secrets display as password dots whose count matches the stored
   // key length; the dots themselves are never submitted — only text the user
@@ -335,9 +342,11 @@ function AsrSection({ draft, setDraft, saving, saveError, onSave }: {
   }
 
   const baidu = credentialView?.baidu
-  const configuredText = credentialErrorText ?? (baidu === undefined
-    ? '读取中…'
-    : baidu.configured ? '已配置' : '未配置')
+  const configuredText = draft.asrProvider === 'whisper-local'
+    ? '本地模式（无需百度凭据）'
+    : credentialErrorText ?? (baidu === undefined
+      ? '读取中…'
+      : baidu.configured ? '已配置' : '未配置')
 
   return (
     <div>

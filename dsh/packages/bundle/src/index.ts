@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { admitEncodedImages, type EncodedImageAttachment } from '@deepseek-ai/dsh-attachment'
 import { SessionId, type SessionEvent, type SessionHeader, type SessionId as DshSessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-agent-presets'
 import type {} from '@deepseek-ai/dsh-session-persistence'
@@ -366,9 +367,13 @@ export class MomentQService extends Service {
   }
 
   /** Submit one real user turn and return the assistant text committed by DSH. */
-  async submitMessage(identity: ContentIdentity, text: string): Promise<SubmitMessageResult> {
+  async submitMessage(
+    identity: ContentIdentity,
+    text: string,
+    images: readonly EncodedImageAttachment[] = [],
+  ): Promise<SubmitMessageResult> {
     let result: SubmitMessageResult | undefined
-    await this.streamMessage(identity, text, (event) => {
+    await this.streamMessage(identity, text, images, (event) => {
       if (event.type === 'complete') result = event.result
     })
     if (result === undefined) throw new Error('MomentQ Agent did not complete the submitted message')
@@ -379,11 +384,14 @@ export class MomentQService extends Service {
   async streamMessage(
     identity: ContentIdentity,
     text: string,
+    images: readonly EncodedImageAttachment[] = [],
     publish: (event: MessageStreamEvent) => void,
     signal?: AbortSignal,
   ): Promise<SubmitMessageResult> {
     const prompt = text.trim()
-    if (prompt === '' || prompt.length > 32_000) throw new Error('message must contain 1 to 32000 characters')
+    if ((prompt === '' && images.length === 0) || prompt.length > 32_000) {
+      throw new Error('message must contain text or images')
+    }
     return await this.forContent(identity, async () => {
       if (signal?.aborted === true) throw new Error('MomentQ request aborted')
       const cwd = contentDirectory(this.root, identity)
@@ -392,8 +400,15 @@ export class MomentQService extends Service {
       const active = this.requireActive(state)
       const agent = await this.ensureAgent(active, cwd)
       const eventOffset = agent.session.events.length
+      // Images persist through the attachment store (content-addressed
+      // bytes under DSH_HOME/attachments) and ride in the message as image
+      // blocks the DeepSeek adapter resolves for the vision model.
+      const refs = images.length > 0 ? await admitEncodedImages(this.ctx.attachments, images) : []
       const message = createUserMessage({
-        content: [{ type: 'text', text: prompt }],
+        content: [
+          ...refs.map(ref => ({ type: 'image' as const, attachment: ref })),
+          { type: 'text', text: prompt },
+        ],
         source: { kind: 'user' },
       })
       const forward = (session: Agent['session'], event: SessionEvent): void => {

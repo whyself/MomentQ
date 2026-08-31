@@ -178,6 +178,7 @@ describe.sequential('assembled MomentQ Bundle runtime', () => {
     const streamed = await firstRuntime.ctx.momentq.streamMessage(
       request.identity,
       '流式解释一下特征值',
+      [],
       event => { streamedEvents.push(event.type) },
     )
     expect(streamed.replies).toEqual([{ id: expect.any(String), text: 'ok' }])

@@ -9,4 +9,5 @@ export {
   type ConversationHistoryEntry,
   type SyncTranscriptResult,
   type TranscriptSegment,
+  type WireImage,
 } from '../../../dsh/packages/bundle/src/sdk'

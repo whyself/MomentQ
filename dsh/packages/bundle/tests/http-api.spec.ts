@@ -19,7 +19,7 @@ async function harness() {
     getContent: vi.fn(async () => ({ schemaVersion: 1 })),
     submitMessage: vi.fn(async () => ({ replies: [{ id: 'reply', text: 'ok' }] })),
     syncTranscript: vi.fn(async () => ({ contentKey: 'key', source: 'bilibili', segments: 1 })),
-    streamMessage: vi.fn(async (_identity: unknown, _text: string, publish: (event: unknown) => void) => {
+    streamMessage: vi.fn(async (_identity: unknown, _text: string, _images: unknown, publish: (event: unknown) => void) => {
       const result = {
         contentKey: 'key', sessionId: 'session', userMessageId: 'user', replies: [{ id: 'reply', text: '# 标题' }],
       }
@@ -71,7 +71,7 @@ describe('MomentQ loopback HTTP API', () => {
     expect((await call(h.endpoint, {
       method: 'submitMessage', params: { identity, text: '总结当前视频' },
     })).status).toBe(200)
-    expect(h.momentq.submitMessage).toHaveBeenCalledWith(identity, '总结当前视频')
+    expect(h.momentq.submitMessage).toHaveBeenCalledWith(identity, '总结当前视频', undefined)
 
     expect((await call(h.endpoint, {
       method: 'syncTranscript',
@@ -113,7 +113,7 @@ describe('MomentQ loopback HTTP API', () => {
     ])
     expect(events.filter(event => event.type === 'assistant-delta').map(event => event.text).join('')).toBe('# 标题')
     expect(h.momentq.streamMessage).toHaveBeenCalledWith(
-      identity, '请用 Markdown 回答', expect.any(Function), expect.any(AbortSignal),
+      identity, '请用 Markdown 回答', undefined, expect.any(Function), expect.any(AbortSignal),
     )
   })
 

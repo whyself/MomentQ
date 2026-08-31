@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MomentQTabState } from '../shared/protocol'
-import { MomentQClient, type MessageStreamEvent, type SubmitMessageResult } from '../shared/host-client'
+import { MomentQClient, type MessageStreamEvent, type SubmitMessageResult, type WireImage } from '../shared/host-client'
 import { fetchCompanionConfig } from '../shared/companion-client'
 import { loadSettings } from '../shared/settings-store'
 import type { ExtensionSettings } from '../shared/settings'
@@ -133,6 +133,7 @@ export function App({ subscribe }: {
 
   async function submitMessage(
     text: string,
+    images: readonly { dataUrl: string; name: string }[],
     onEvent: (event: MessageStreamEvent) => void,
     signal: AbortSignal,
   ): Promise<SubmitMessageResult> {
@@ -149,7 +150,18 @@ export function App({ subscribe }: {
     // The suffix is for the AGENT (stored with the message); the bubble
     // splits it off for display — see video-stamp.ts.
     const stamp = playbackStamp(typeof liveTime === 'number' ? liveTime : playbackTime)
-    return await client.streamMessage(state.context.identity, withVideoTimeSuffix(text, stamp), onEvent, signal)
+    const wireImages = images.flatMap(({ dataUrl, name }): WireImage[] => {
+      const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,(.+)$/.exec(dataUrl)
+      if (match === null) return []
+      return [{ mediaType: match[1] as WireImage['mediaType'], data: match[2] ?? '', name }]
+    })
+    return await client.streamMessage(
+      state.context.identity,
+      withVideoTimeSuffix(text, stamp),
+      wireImages,
+      onEvent,
+      signal,
+    )
   }
 
   async function captureCurrentFrame(): Promise<string | null> {

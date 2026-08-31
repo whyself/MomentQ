@@ -117,13 +117,14 @@ export class MomentQClient {
   async streamMessage(
     identity: ContentIdentity,
     text: string,
+    images: readonly WireImage[],
     onEvent: (event: MessageStreamEvent) => void,
     signal?: AbortSignal,
   ): Promise<SubmitMessageResult> {
     const response = await this.fetcher(`${this.baseUrl}/momentq/api/stream`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ identity, text }),
+      body: JSON.stringify({ identity, text, ...(images.length === 0 ? {} : { images }) }),
       ...(signal === undefined ? {} : { signal }),
     })
     if (!response.ok || response.body === null) {
@@ -270,4 +271,11 @@ export class MomentQClient {
     }
     return value as MessageStreamEvent
   }
+}
+
+/** An image on the wire: canonical base64 (no data: prefix) + media type. */
+export type WireImage = {
+  mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'
+  data: string
+  name?: string
 }
