@@ -29,7 +29,7 @@ import { MomentQClient } from '../shared/host-client'
 import { loadSettings } from '../shared/settings-store'
 import { trackNeedsChineseTranslation, transcriptExceedsHost } from '../shared/bilibili-subtitle'
 
-type WorkerRequest = PageContextRuntimeMessage | ResolvePageSnapshotMessage | { type: 'MOMENTQ_RESOLVE_DASH_AUDIO'; bvid: string; cid: string } | GetTabStateMessage | ToggleTranscriptionMessage | ToggleCurrentTranscriptionMessage | CaptureCurrentFrameMessage | GetCurrentVideoTimeMessage | ClearAsrSubtitlesMessage | PageSubtitleTracksMessageEnvelope | AsrStartFromPanelMessage | AsrEventMessage | AsrSessionMessage | { type: 'MOMENTQ_ASR_PANEL_CAPTURE_FAILED'; tabId?: unknown; message?: unknown }
+type WorkerRequest = PageContextRuntimeMessage | ResolvePageSnapshotMessage | { type: 'MOMENTQ_RESOLVE_DASH_AUDIO'; bvid: string; cid: string } | { type: 'MOMENTQ_PROXY_FETCH'; url: string } | GetTabStateMessage | ToggleTranscriptionMessage | ToggleCurrentTranscriptionMessage | CaptureCurrentFrameMessage | GetCurrentVideoTimeMessage | ClearAsrSubtitlesMessage | PageSubtitleTracksMessageEnvelope | AsrStartFromPanelMessage | AsrEventMessage | AsrSessionMessage | { type: 'MOMENTQ_ASR_PANEL_CAPTURE_FAILED'; tabId?: unknown; message?: unknown }
 
 const storageKey = (tabId: number) => `tab:${tabId}`
 // The queue serializes fast local state mutations only. Network calls never
@@ -72,6 +72,7 @@ function requestType(value: unknown): WorkerRequest['type'] | null {
     || value.type === 'MOMENTQ_CAPTURE_CURRENT_FRAME') return value.type
   if (value.type === 'MOMENTQ_GET_CURRENT_VIDEO_TIME') return value.type
   if (value.type === 'MOMENTQ_CLEAR_ASR_SUBTITLES') return value.type
+  if (value.type === 'MOMENTQ_PROXY_FETCH' && typeof value.url === 'string' && value.url.startsWith('https://')) return value.type
   if (value.type === 'MOMENTQ_RESOLVE_DASH_AUDIO'
     && typeof value.bvid === 'string' && value.bvid !== ''
     && typeof value.cid === 'string' && value.cid !== '') return value.type
@@ -996,6 +997,31 @@ async function handleRequest(
     if (tabId === undefined || !isPageSubtitleTracksMessageEnvelope(message)) return null
     await syncPageSubtitleTracks(tabId, message)
     return await readState(tabId)
+  }
+
+  if (type === 'MOMENTQ_PROXY_FETCH') {
+    // The Bilibili CDN rejects cross-origin fetches whose Referer is the
+    // extension origin (HTTP 403). A background fetch lets us present a
+    // browser-credible set of headers instead. Audio m4s tracks are a few
+    // MB; one base64 message over the loopback channel is fine.
+    const request = message as { url?: unknown }
+    const url = typeof request.url === 'string' ? request.url : ''
+    try {
+      const response = await fetch(url, {
+        headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) MomentQ/1.1', referer: 'https://www.bilibili.com/' },
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const buffer = await response.arrayBuffer()
+      let binary = ''
+      const bytes = new Uint8Array(buffer)
+      const chunk = 0x8000
+      for (let offset = 0; offset < bytes.length; offset += chunk) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + chunk))
+      }
+      return { ok: true, value: { base64: btoa(binary) } }
+    } catch (error) {
+      return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } }
+    }
   }
 
   if (type === 'MOMENTQ_RESOLVE_DASH_AUDIO') {

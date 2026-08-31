@@ -53,14 +53,21 @@ export async function runPreTranscription(options: {
   throwIfCancelled()
 
   onProgress({ fraction: 0.05, stage: 'downloading', message: '正在下载音频…' })
-  let audioResponse: Response
+  let fileBytes: ArrayBuffer
   try {
-    audioResponse = await fetch(dash.baseUrl)
+    const reply = await chrome.runtime.sendMessage({ type: 'MOMENTQ_PROXY_FETCH', url: dash.baseUrl }) as
+      { ok?: unknown; value?: { base64?: unknown }; error?: { message?: unknown } } | null
+    if (reply === null || reply.ok !== true || typeof reply.value?.base64 !== 'string') {
+      const detail = reply?.error && typeof reply.error.message === 'string' ? reply.error.message : '未知错误'
+      throw new Error(detail)
+    }
+    const binary = atob(reply.value.base64)
+    fileBytes = new ArrayBuffer(binary.length)
+    const view = new Uint8Array(fileBytes)
+    for (let index = 0; index < binary.length; index += 1) view[index] = binary.charCodeAt(index)
   } catch (error) {
-    throw new Error(`音频下载连接失败（${dash.baseUrl.split('/')[2]}）：${error instanceof Error ? error.message : String(error)}`)
+    throw new Error(`音频下载失败（${dash.baseUrl.split('/')[2]}）：${error instanceof Error ? error.message : String(error)}`)
   }
-  if (!audioResponse.ok) throw new Error(`音频下载失败 HTTP ${audioResponse.status}`)
-  const fileBytes = await audioResponse.arrayBuffer()
   throwIfCancelled()
 
   onProgress({ fraction: 0.18, stage: 'decoding', message: '正在解码音频…' })

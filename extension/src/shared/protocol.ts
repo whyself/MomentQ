@@ -151,6 +151,12 @@ export type ResolveDashAudioMessage = {
   cid: string
 }
 
+/** Panel → background: proxy-fetch a URL with browser-credible headers. */
+export type ProxyFetchMessage = {
+  type: 'MOMENTQ_PROXY_FETCH'
+  url: string
+}
+
 /** Panel → content script: seek the active video to an answer's timestamp. */
 export type SeekVideoMessage = {
   type: 'MOMENTQ_SEEK_VIDEO'
