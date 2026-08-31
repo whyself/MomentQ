@@ -9,6 +9,7 @@ import { sanitizeSettings } from '../shared/settings'
 import { ASR_PROVIDERS, WHISPER_MODELS } from '../shared/settings'
 import type { AsrProviderId, ExtensionSettings, ThemePreference, WhisperModelId } from '../shared/settings'
 import { MomentQClient } from '../shared/host-client'
+import type { ContentIdentity } from '../shared/host-client'
 import { fetchCompanionConfig, saveCompanionBaiduCredentials, type CompanionConfigView } from '../shared/companion-client'
 import { loadModelApiKey, saveModelApiKey, saveSettings } from '../shared/settings-store'
 import { SettingsRoot as UpstreamSettingsRoot } from '../vendor/deepseek-harness/packages/client/ui-settings-general/src/client/SettingsRoot.tsx'
@@ -129,7 +130,7 @@ function saveErrorMessage(error: unknown, hostBaseUrl: string): string {
 
 function GeneralSettingsSection({
   draft, setDraft, setTheme, modelApiKey, setModelApiKey,
-  saving, saveError, onSave,
+  saving, saveError, onSave, currentIdentity, currentTabId,
 }: {
   draft: ExtensionSettings
   setDraft: (settings: ExtensionSettings) => void
@@ -139,9 +140,43 @@ function GeneralSettingsSection({
   saving: boolean
   saveError: string | null
   onSave: () => void
+  /** Video the panel is currently bound to; undefined when none. */
+  currentIdentity?: ContentIdentity | undefined
+  currentTabId?: number | undefined
 }) {
   const [clearing, setClearing] = useState(false)
   const [clearResult, setClearResult] = useState<string | null>(null)
+  const [subtitleClearing, setSubtitleClearing] = useState(false)
+  const [subtitleResult, setSubtitleResult] = useState<string | null>(null)
+  const clearSubtitleArchive = (): void => {
+    if (currentIdentity === undefined || subtitleClearing) return
+    if (!window.confirm('清除当前视频的语音识别字幕存档？已转录的内容将从本机删除，且不可恢复。')) return
+    void (async () => {
+      setSubtitleClearing(true)
+      setSubtitleResult(null)
+      try {
+        await new MomentQClient({ baseUrl: draft.hostBaseUrl }).clearTranscript(currentIdentity)
+        // Best-effort: drop the tab's in-memory ASR rows so the ticker stops
+        // showing subtitles whose archive is gone.
+        let memoryCleared = false
+        if (typeof currentTabId === 'number') {
+          try {
+            const reply = await chrome.runtime.sendMessage({
+              type: 'MOMENTQ_CLEAR_ASR_SUBTITLES',
+              tabId: currentTabId,
+            }) as { cleared?: unknown } | null
+            memoryCleared = reply?.cleared === true
+          } catch { /* background unreachable: archive is cleared regardless */ }
+        }
+        setSubtitleResult(memoryCleared ? '已清除存档与当前字幕显示' : '已清除存档')
+      } catch (error) {
+        setSubtitleResult(saveErrorMessage(error, draft.hostBaseUrl))
+      } finally {
+        setSubtitleClearing(false)
+      }
+    })()
+  }
+
   const clearAllSessions = (): void => {
     if (clearing) return
     if (!window.confirm('清空所有视频的全部对话记录？字幕与视频信息保留，对话日志会被物理删除且不可恢复。')) return
@@ -184,6 +219,21 @@ function GeneralSettingsSection({
         </Button>
       </Row>
       {clearResult !== null && <div className={rowCss.desc} role="status">{clearResult}</div>}
+      <Row
+        title="清除当前视频字幕存档"
+        description={currentIdentity === undefined
+          ? '当前没有打开的视频。'
+          : '删除本机保存的当前视频的语音识别字幕，下次转录从头开始；官方字幕与对话不受影响。'}
+      >
+        <Button
+          variant="ghost"
+          disabled={currentIdentity === undefined || subtitleClearing}
+          onClick={clearSubtitleArchive}
+        >
+          {subtitleClearing ? '清除中…' : '清除'}
+        </Button>
+      </Row>
+      {subtitleResult !== null && <div className={rowCss.desc} role="status">{subtitleResult}</div>}
     </div>
   )
 }
@@ -336,9 +386,12 @@ function AsrSection({ draft, setDraft, saving, saveError, onSave }: {
   )
 }
 
-export function SettingsView({ settings, onSettingsChange }: {
+export function SettingsView({ settings, onSettingsChange, currentIdentity, currentTabId }: {
   settings: ExtensionSettings
   onSettingsChange: (settings: ExtensionSettings) => void
+  /** Video the panel is currently bound to; undefined when none. */
+  currentIdentity?: ContentIdentity | undefined
+  currentTabId?: number | undefined
 }) {
   const [draft, setDraft] = useState(settings)
   const [modelApiKey, setModelApiKey] = useState('')
@@ -415,6 +468,8 @@ export function SettingsView({ settings, onSettingsChange }: {
                 saving={saving}
                 saveError={saveError}
                 onSave={() => { void saveAndClose(close) }}
+                currentIdentity={currentIdentity}
+                currentTabId={currentTabId}
               />
             </div>
           )}

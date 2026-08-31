@@ -91,6 +91,11 @@ export class MomentQClient {
     return await this.call('getTranscript', { identity }, signal)
   }
 
+  /** Wipe the persisted transcript archive for one content identity. */
+  async clearTranscript(identity: ContentIdentity, signal?: AbortSignal): Promise<{ cleared: true }> {
+    return await this.call('clearTranscript', { identity }, signal)
+  }
+
   async submitMessage(
     identity: ContentIdentity,
     text: string,

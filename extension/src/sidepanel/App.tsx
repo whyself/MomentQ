@@ -333,7 +333,12 @@ export function App({ subscribe }: {
         {...(asrConfigured === null ? {} : { asrConfigured })}
         transcriptionNotice={transcriptionNotice}
         settings={settings === null ? null : (
-          <SettingsView settings={settings} onSettingsChange={setSettings} />
+          <SettingsView
+            settings={settings}
+            onSettingsChange={setSettings}
+            currentIdentity={state?.context.identity}
+            currentTabId={state?.tabId}
+          />
         )}
       />
     </main>

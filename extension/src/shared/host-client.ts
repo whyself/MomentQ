@@ -3,6 +3,7 @@
 export {
   MomentQClient,
   MomentQClientError,
+  type ContentIdentity,
   type MessageStreamEvent,
   type SubmitMessageResult,
   type ConversationHistoryEntry,

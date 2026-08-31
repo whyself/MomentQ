@@ -150,6 +150,12 @@ export type SeekVideoMessage = {
   seconds: number
 }
 
+/** Settings → background: drop the tab's in-memory ASR subtitle state. */
+export type ClearAsrSubtitlesMessage = {
+  type: 'MOMENTQ_CLEAR_ASR_SUBTITLES'
+  tabId: number
+}
+
 export type TabStateChangedMessage = {
   type: 'MOMENTQ_TAB_STATE_CHANGED'
   tabId: number

@@ -19,6 +19,7 @@ import {
   type ContentMetadata,
 } from './content.ts'
 import {
+  clearTranscript,
   ensureState,
   MomentQStateNotFoundError,
   readState,
@@ -350,6 +351,17 @@ export class MomentQService extends Service {
         segments: segments.length,
         ...(next.transcript.updatedAt === undefined ? {} : { updatedAt: next.transcript.updatedAt }),
       }
+    })
+  }
+
+  /** Wipe the persisted transcript archive for one content identity. */
+  async clearTranscript(identity: ContentIdentity): Promise<{ cleared: true }> {
+    return await this.forContent(identity, async () => {
+      const cwd = contentDirectory(this.root, identity)
+      const state = await readState(cwd)
+      this.assertIdentity(identity, state)
+      await clearTranscript(cwd)
+      return { cleared: true as const }
     })
   }
 

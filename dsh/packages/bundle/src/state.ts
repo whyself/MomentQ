@@ -146,8 +146,20 @@ export async function replaceTranscript(
   })
 }
 
-/** Read back the persisted transcript rows with their provenance. */
-export async function readTranscript(directory: string): Promise<{
+/** Wipe the persisted transcript archive; provenance resets to 'none'. */
+export async function clearTranscript(directory: string): Promise<MomentQState> {
+  return await serialized(directory, async () => {
+    const current = await readStateOrUndefined(directory)
+    if (current === undefined) throw new MomentQStateNotFoundError(`MomentQ state is missing in "${resolve(directory)}"`)
+    await writeFileAtomic(join(resolve(directory), 'transcript.jsonl'), '')
+    return await publishState(resolve(directory), {
+      ...current,
+      transcript: { source: 'none', coveredRanges: [] },
+    })
+  })
+}
+
+/** Read back the persisted transcript rows with their provenance. */export async function readTranscript(directory: string): Promise<{
   source: 'none' | 'bilibili' | 'asr'
   segments: TranscriptSegment[]
   updatedAt?: string | undefined

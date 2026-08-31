@@ -14,6 +14,7 @@ import type {
   ToggleCurrentTranscriptionMessage,
   CaptureCurrentFrameMessage,
   GetCurrentVideoTimeMessage,
+  ClearAsrSubtitlesMessage,
   ResolvePageSnapshotMessage,
   PageSubtitleTracksMessageEnvelope,
   BilibiliSubtitleSegment,
@@ -28,7 +29,7 @@ import { MomentQClient } from '../shared/host-client'
 import { loadSettings } from '../shared/settings-store'
 import { trackNeedsChineseTranslation, transcriptExceedsHost } from '../shared/bilibili-subtitle'
 
-type WorkerRequest = PageContextRuntimeMessage | ResolvePageSnapshotMessage | GetTabStateMessage | ToggleTranscriptionMessage | ToggleCurrentTranscriptionMessage | CaptureCurrentFrameMessage | GetCurrentVideoTimeMessage | PageSubtitleTracksMessageEnvelope | AsrStartFromPanelMessage | AsrEventMessage | AsrSessionMessage | { type: 'MOMENTQ_ASR_PANEL_CAPTURE_FAILED'; tabId?: unknown; message?: unknown }
+type WorkerRequest = PageContextRuntimeMessage | ResolvePageSnapshotMessage | GetTabStateMessage | ToggleTranscriptionMessage | ToggleCurrentTranscriptionMessage | CaptureCurrentFrameMessage | GetCurrentVideoTimeMessage | ClearAsrSubtitlesMessage | PageSubtitleTracksMessageEnvelope | AsrStartFromPanelMessage | AsrEventMessage | AsrSessionMessage | { type: 'MOMENTQ_ASR_PANEL_CAPTURE_FAILED'; tabId?: unknown; message?: unknown }
 
 const storageKey = (tabId: number) => `tab:${tabId}`
 // The queue serializes fast local state mutations only. Network calls never
@@ -70,6 +71,7 @@ function requestType(value: unknown): WorkerRequest['type'] | null {
     || value.type === 'MOMENTQ_TOGGLE_CURRENT_TRANSCRIPTION'
     || value.type === 'MOMENTQ_CAPTURE_CURRENT_FRAME') return value.type
   if (value.type === 'MOMENTQ_GET_CURRENT_VIDEO_TIME') return value.type
+  if (value.type === 'MOMENTQ_CLEAR_ASR_SUBTITLES') return value.type
   if (value.type === 'PAGE_SUBTITLE_TRACKS' && isPageSubtitleTracksMessageEnvelope(value)) return value.type
   if (value.type === 'MOMENTQ_ASR_START_FROM_PANEL') {
     return typeof value.tabId === 'number' && Number.isSafeInteger(value.tabId) && value.tabId >= 0
@@ -861,7 +863,7 @@ function toggleTranscription(tabId: number): Promise<MomentQTabState | null> {
 async function handleRequest(
   message: unknown,
   sender: chrome.runtime.MessageSender,
-): Promise<MomentQTabState | string | number | null> {
+): Promise<MomentQTabState | string | number | { cleared: boolean } | null> {
   const type = requestType(message)
   if (!type || !isRecord(message)) return null
 
@@ -1005,6 +1007,27 @@ async function handleRequest(
     // playback clock (and thus subtitles) works without a page refresh.
     void ensureTabBridge(tabId)
     return await readOrResolveState(tabId)
+  }
+  if (type === 'MOMENTQ_CLEAR_ASR_SUBTITLES') {
+    // The archive was just wiped in the Host; drop the tab's in-memory ASR
+    // subtitle state so the ticker stops showing cleared rows. A live
+    // transcription session keeps its rows (it would re-persist anyway).
+    return await tabOperations.run(tabId, async () => {
+      const state = await readState(tabId)
+      if (state === null || state.subtitleSource !== 'asr' || state.transcription !== 'inactive') {
+        return { cleared: false }
+      }
+      const {
+        subtitleSegments: _segments,
+        subtitleIdentity: _identity,
+        subtitleSource: _source,
+        ...withoutSubs
+      } = state
+      const next = { ...withoutSubs, transcription: 'inactive' as const }
+      await writeState(tabId, next)
+      publishState(tabId, next)
+      return { cleared: true }
+    })
   }
   return await toggleTranscription(tabId)
 }
