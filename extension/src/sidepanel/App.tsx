@@ -8,6 +8,8 @@ import { ConversationView } from './ConversationView'
 import { pausePanelSession, panelSessionTabId, sessionClock, startPanelSession, stopPanelSession } from './asr-session'
 import { SettingsView } from './SettingsView'
 import { applyTheme } from './theme'
+import { playbackStamp, withVideoTimeSuffix } from './video-stamp'
+import './message-extras.css'
 import './composition.css'
 import './subtitle.css'
 import './stale-overlay.css'
@@ -122,13 +124,6 @@ export function App({ subscribe }: {
     return () => { active = false }
   }, [settings])
 
-  function playbackStamp(seconds: number | undefined): string | null {
-    if (seconds === undefined || !Number.isFinite(seconds) || seconds < 0) return null
-    const whole = Math.floor(seconds)
-    const minutes = Math.floor(whole / 60)
-    const rest = whole % 60
-    return `${minutes}:${String(rest).padStart(2, '0')}`
-  }
   useEffect(() => {
     void loadSettings().then((value) => {
       setSettings(value)
@@ -151,9 +146,10 @@ export function App({ subscribe }: {
       type: 'MOMENTQ_GET_CURRENT_VIDEO_TIME',
       tabId: state.tabId,
     }).catch(() => null)
+    // The suffix is for the AGENT (stored with the message); the bubble
+    // splits it off for display — see video-stamp.ts.
     const stamp = playbackStamp(typeof liveTime === 'number' ? liveTime : playbackTime)
-    const contextualText = stamp === null ? text : `${text}\n\n[当前视频播放时间：${stamp}]`
-    return await client.streamMessage(state.context.identity, contextualText, onEvent, signal)
+    return await client.streamMessage(state.context.identity, withVideoTimeSuffix(text, stamp), onEvent, signal)
   }
 
   async function captureCurrentFrame(): Promise<string | null> {

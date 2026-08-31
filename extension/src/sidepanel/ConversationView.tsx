@@ -11,6 +11,7 @@ import conversationCss from '../vendor/deepseek-harness/packages/client/ui-conve
 import heroCss from '../vendor/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/HeroShell.module.css'
 import inputCss from '../vendor/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/InputBar.module.css'
 import { selectSubtitleWindow } from './subtitle-window'
+import { playbackStamp, splitVideoStamp, withVideoTimeSuffix } from './video-stamp'
 
 function ContextHeader({ state, settings, transcriptionToggle, clearSession }: {
   state: MomentQTabState | null
@@ -261,6 +262,21 @@ function Composer({ available, draft, pending, hero, frame, onCaptureFrame, onPa
   )
 }
 
+function UserEntry({ entry }: {
+  entry: ConversationEntry
+}) {
+  const { body, stamp } = splitVideoStamp(entry.text)
+  return (
+    <div className={messageCss.userRow}>
+      <div className={messageCss.userStack}>
+        {entry.image !== undefined && <img src={entry.image} alt="当前画面" style={{ maxWidth: '240px', borderRadius: '12px' }} />}
+        {body !== '' && <div className={messageCss.bubble}>{body}</div>}
+        {stamp !== null && <div className="momentq-user-stamp">提问于 {stamp}</div>}
+      </div>
+    </div>
+  )
+}
+
 type ConversationEntry = {
   id: string
   role: 'user' | 'assistant'
@@ -376,12 +392,7 @@ function ConversationTranscript({ entries, pending, error, onSeek }: {
       <div className={chatCss.scroll} ref={scrollRef}>
         <div className={chatCss.column}>
           {entries.map(entry => entry.role === 'user' ? (
-            <div key={entry.id} className={messageCss.userRow}>
-              <div className={messageCss.userStack}>
-                {entry.image !== undefined && <img src={entry.image} alt="当前画面" style={{ maxWidth: '240px', borderRadius: '12px' }} />}
-                {entry.text !== '' && <div className={messageCss.bubble}>{entry.text}</div>}
-              </div>
-            </div>
+            <UserEntry key={entry.id} entry={entry} />
           ) : (
             <AssistantText
               key={entry.id}
@@ -556,10 +567,11 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
     setFrame(null)
     setError(null)
     setPending(true)
+    const sentText = withVideoTimeSuffix(text, playbackStamp(playbackTime))
     setEntries(current => [...current, {
       id: localId,
       role: 'user',
-      text,
+      text: sentText,
       ...(frame === null ? {} : { image: frame.dataUrl }),
     }])
     const onEvent = (event: MessageStreamEvent): void => {

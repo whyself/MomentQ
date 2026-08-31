@@ -1,0 +1,13 @@
+/* The video moment a question was asked at, shown as a small blue stamp
+   under the user's bubble (the machine-readable suffix lives in the stored
+   message only — never in the bubble text). */
+.momentq-user-stamp {
+  margin-top: 2px;
+  padding-right: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #4a7dff;
+  text-align: right;
+  opacity: 0.9;
+  user-select: none;
+}
