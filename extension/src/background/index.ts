@@ -1138,8 +1138,10 @@ async function handleRequest(
     // transcription session keeps its rows (it would re-persist anyway).
     return await tabOperations.run(tabId, 'handleRequest', async () => {
       const state = await readState(tabId)
+      // A live session keeps re-persisting rows, so an active transcription
+      // cannot honor the wipe — report it instead of pretending.
       if (state === null || state.subtitleSource !== 'asr' || state.transcription !== 'inactive') {
-        return { cleared: false }
+        return { cleared: false, reason: state?.transcription !== 'inactive' ? 'active-session' : 'not-asr' }
       }
       const {
         subtitleSegments: _segments,

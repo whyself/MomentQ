@@ -28,16 +28,24 @@ export type PanelSessionStart = {
   whisperModel: WhisperModel
 }
 
+type WhisperChunk = { audio: Float32Array; /** Media time at chunk START. */ startMedia: number }
 type WhisperRuntime = {
   model: WhisperModel
-  /** Audio awaiting inference, in arrival order. */
-  queue: Float32Array[]
+  /** Audio awaiting inference, in arrival order, media-time stamped. */
+  queue: WhisperChunk[]
   queuedSamples: number
   processing: boolean
   paused: boolean
   totalSamples: number
   lastMediaSeconds: number | null
   droppedChunks: number
+  /**
+   * Segments whose start predates the newest seek are stale: their audio was
+   * captured on an abandoned timeline, so they are dropped instead of
+   * persisted (the source of the "seek scrambles subtitles" reports).
+   */
+  timelineEpoch: number
+  seekGeneration: number
 }
 
 type RunningSession = {
@@ -76,7 +84,22 @@ export function sessionClock(seconds: number): void {
     // clock keeps the resumed chunks' timestamps aligned with the audio that
     // will actually be transcribed instead of skipping the paused span.
     if (session.whisper.paused) return
-    session.whisper.lastMediaSeconds = seconds
+    const runtime = session.whisper
+    const previous = runtime.lastMediaSeconds
+    runtime.lastMediaSeconds = seconds
+    if (previous !== null) {
+      // Normal playback advances ~1x; poll jitter is small. A jump backwards,
+      // or forwards beyond what realtime capture could have produced since
+      // the last tick, means the user seeked (or changed speed): the queued
+      // audio was captured on a timeline that no longer exists.
+      const drift = seconds - previous
+      if (drift < -1.5 || drift > 8) {
+        runtime.seekGeneration += 1
+        runtime.queue = []
+        runtime.queuedSamples = 0
+        runtime.timelineEpoch = runtime.seekGeneration
+      }
+    }
     return
   }
   if (session.socket !== undefined && session.socket.readyState === WebSocket.OPEN) {
@@ -184,7 +207,7 @@ export async function startPanelSession(request: PanelSessionStart): Promise<voi
     }
 
     const whisper: WhisperRuntime | undefined = request.engine === 'whisper'
-      ? { model: request.whisperModel, queue: [], queuedSamples: 0, processing: false, paused: false, totalSamples: 0, lastMediaSeconds: null, droppedChunks: 0 }
+      ? { model: request.whisperModel, queue: [], queuedSamples: 0, processing: false, paused: false, totalSamples: 0, lastMediaSeconds: null, droppedChunks: 0, timelineEpoch: 0, seekGeneration: 0 }
       : undefined
     session.whisper = whisper
 
@@ -221,7 +244,8 @@ export async function startPanelSession(request: PanelSessionStart): Promise<voi
         const atRate = context.sampleRate !== 16_000
           ? resampleLinear(chunk, context.sampleRate, 16_000)
           : chunk
-        whisper.queue.push(atRate)
+        const startMedia = whisper.lastMediaSeconds ?? whisper.totalSamples / 16_000
+        whisper.queue.push({ audio: atRate, startMedia })
         whisper.queuedSamples += atRate.length
         whisper.totalSamples += atRate.length
         if (whisper.queuedSamples >= WHISPER_CHUNK_SAMPLES) void pumpWhisper(request.tabId, whisper)
@@ -260,27 +284,36 @@ async function pumpWhisper(tabId: number, runtime: WhisperRuntime): Promise<void
       while (runtime.queuedSamples > WHISPER_MAX_QUEUE_SAMPLES && runtime.queue.length > 1) {
         const dropped = runtime.queue.shift()
         if (dropped === undefined) break
-        runtime.queuedSamples -= dropped.length
+        runtime.queuedSamples -= dropped.audio.length
         runtime.droppedChunks += 1
         reportEvent(tabId, { type: 'partial', text: `推理跟不上播放，已跳过最早的 ${runtime.droppedChunks} 段音频` })
       }
-      const pieces: Float32Array[] = []
+      const pieces: WhisperChunk[] = []
       let samples = 0
       while (runtime.queue.length > 0 && samples < WHISPER_MAX_UTTERANCE_SAMPLES) {
         const next = runtime.queue.shift()
         if (next === undefined) break
         pieces.push(next)
-        runtime.queuedSamples -= next.length
-        samples += next.length
+        runtime.queuedSamples -= next.audio.length
+        samples += next.audio.length
       }
-      await transcribeUtterance(tabId, concatSamples(pieces), runtime)
+      const epochAtDequeue = runtime.seekGeneration
+      await transcribeUtterance(tabId, concatSamples(pieces.map(piece => piece.audio)), runtime, {
+        startMedia: pieces[0]?.startMedia ?? 0,
+        epochAtDequeue,
+      })
     }
   } finally {
     runtime.processing = false
   }
 }
 
-async function transcribeUtterance(tabId: number, audio: Float32Array, runtime: WhisperRuntime): Promise<void> {
+async function transcribeUtterance(
+  tabId: number,
+  audio: Float32Array,
+  runtime: WhisperRuntime,
+  span: { startMedia: number; epochAtDequeue: number },
+): Promise<void> {
   const chunkSeconds = audio.length / 16_000
   try {
     reportEvent(tabId, { type: 'partial', text: '本地识别中…' })
@@ -288,10 +321,13 @@ async function transcribeUtterance(tabId: number, audio: Float32Array, runtime: 
       reportEvent(tabId, { type: 'partial', text: status })
     })
     // Attribute finals only while this runtime still owns the live session:
-    // a slow inference must never land its text on a switched video.
-    if (text !== '' && session?.whisper === runtime) {
-      const endMedia = runtime.lastMediaSeconds ?? runtime.totalSamples / 16_000
-      const startMedia = Math.max(0, endMedia - chunkSeconds)
+    // a slow inference must never land its text on a switched video. A seek
+    // during inference invalidates the utterance entirely — its audio was
+    // captured on an abandoned timeline, so persisting it would scatter rows
+    // across the wrong times.
+    if (text !== '' && session?.whisper === runtime && runtime.seekGeneration === span.epochAtDequeue) {
+      const startMedia = Math.max(0, span.startMedia)
+      const endMedia = Math.max(startMedia, span.startMedia + chunkSeconds)
       reportEvent(tabId, { type: 'final', start: startMedia, end: endMedia, text })
     }
   } catch (error) {

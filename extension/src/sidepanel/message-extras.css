@@ -11,3 +11,43 @@
   opacity: 0.9;
   user-select: none;
 }
+
+/* Full-video pre-transcription progress strip (sits at the top of the
+   content area, above the conversation). */
+.momentq-pretranscribe {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 16px 0;
+}
+
+.momentq-pretranscribe-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(120, 120, 130, 0.25);
+  overflow: hidden;
+}
+
+.momentq-pretranscribe-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: #4a7dff;
+  transition: width 0.4s ease;
+}
+
+.momentq-pretranscribe-text {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-secondary, #666);
+  white-space: nowrap;
+}
+
+.momentq-pretranscribe-action {
+  border: none;
+  background: none;
+  font-size: 12px;
+  color: #4a7dff;
+  cursor: pointer;
+  padding: 2px 4px;
+}

@@ -463,7 +463,7 @@ function ConversationTranscript({ entries, pending, error, onSeek }: {
   )
 }
 
-export function ConversationView({ state, capturedFrame, playbackTime, settings, asrConfigured, transcriptionNotice, onCaptureFrame, onLoadHistory, onSubmit, onToggleTranscription, onSeekTo, onClearSession }: {
+export function ConversationView({ state, capturedFrame, playbackTime, settings, asrConfigured, transcriptionNotice, preTranscribe, onStartPreTranscription, onCancelPreTranscription, onCaptureFrame, onLoadHistory, onSubmit, onToggleTranscription, onSeekTo, onClearSession }: {
   state: MomentQTabState | null
   capturedFrame?: string | null
   playbackTime: number | undefined
@@ -481,6 +481,10 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
     signal: AbortSignal,
   ) => Promise<SubmitMessageResult>
   onToggleTranscription?: () => void
+  /** Full-video offline ASR: progress surface + start/cancel. */
+  preTranscribe?: { running: boolean; message: string; fraction: number } | null
+  onStartPreTranscription?: () => void
+  onCancelPreTranscription?: () => void
   /** Seek the active video; undefined keeps timestamps as plain text. */
   onSeekTo?: (seconds: number) => void
   /** Delete the current conversation log and start a fresh Session. */
@@ -723,9 +727,23 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
       <ContextHeader
         state={state}
         settings={settings}
-        transcriptionToggle={onToggleTranscription === undefined
-          ? null
-          : <TranscriptionToggle state={state} asrConfigured={asrConfigured ?? null} onToggle={onToggleTranscription} />}
+        transcriptionToggle={<>
+          {onStartPreTranscription !== undefined && state?.context.kind === 'vod' && (
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label="预识别整视频字幕"
+              title="预识别：下载整段音频离线识别，产出按真实时间轴对齐的完整字幕（可拖动进度条随意观看）"
+              disabled={preTranscribe?.running === true}
+              onClick={onStartPreTranscription}
+            >
+              预识别
+            </Button>
+          )}
+          {onToggleTranscription === undefined
+            ? null
+            : <TranscriptionToggle state={state} asrConfigured={asrConfigured ?? null} onToggle={onToggleTranscription} />}
+        </>}
         clearSession={state === null || !active ? null : (
           <Button
             variant="ghost"
@@ -740,6 +758,17 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
         )}
       />
       <div className={conversationCss.scrollBody}>
+        {preTranscribe !== null && preTranscribe !== undefined && (
+          <div className="momentq-pretranscribe" role="status">
+            <div className="momentq-pretranscribe-bar" data-fraction={preTranscribe.fraction}>
+              <div className="momentq-pretranscribe-fill" style={{ width: `${Math.round(preTranscribe.fraction * 100)}%` }} />
+            </div>
+            <span className="momentq-pretranscribe-text">{preTranscribe.message}</span>
+            {preTranscribe.running
+              ? <button type="button" className="momentq-pretranscribe-action" onClick={onCancelPreTranscription}>取消</button>
+              : <button type="button" className="momentq-pretranscribe-action" onClick={onCancelPreTranscription}>关闭</button>}
+          </div>
+        )}
         {asrUnconfigured && asrWarningLatched && (
           <div className={`momentq-top-warning ${chatCss.openError}`} role="status" data-asr-warning>
             百度语音识别未配置：请打开设置 → 语音识别，填写百度云凭据

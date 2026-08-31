@@ -5,6 +5,7 @@ import { fetchCompanionConfig } from '../shared/companion-client'
 import { loadSettings } from '../shared/settings-store'
 import type { ExtensionSettings } from '../shared/settings'
 import { ConversationView } from './ConversationView'
+import { runPreTranscription, type PreTranscribeHandle } from './pre-transcribe-driver'
 import { pausePanelSession, panelSessionTabId, sessionClock, startPanelSession, stopPanelSession } from './asr-session'
 import { SettingsView } from './SettingsView'
 import { applyTheme } from './theme'
@@ -194,6 +195,61 @@ export function App({ subscribe }: {
     await client.deleteSession(current.context.identity)
   }, [state, settings])
 
+  // Full-video pre-transcription: offline ASR on the true media timeline.
+  const [preTranscribe, setPreTranscribe] = useState<
+    { running: boolean; message: string; fraction: number } | null
+  >(null)
+  const preTranscribeCancel = useRef<(() => void) | null>(null)
+  const startPreTranscription = (): void => {
+    const current = stateRef.current
+    const config = settingsRef.current
+    if (current?.context.kind !== 'vod' || preTranscribeCancel.current !== null) return
+    let cancelled = false
+    const handle: PreTranscribeHandle = { cancel: () => { cancelled = true } }
+    preTranscribeCancel.current = handle.cancel
+    setPreTranscribe({ running: true, message: '准备中…', fraction: 0 })
+    void (async () => {
+      try {
+        if (current.context.kind !== 'vod') return
+        const identity = current.context.identity
+        let pending: Array<{ start: number; end: number; text: string }> = []
+        let flushTimer: ReturnType<typeof setTimeout> | undefined
+        const flush = async (): Promise<void> => {
+          if (pending.length === 0) return
+          const batch = pending
+          pending = []
+          const client = new MomentQClient({ baseUrl: config?.hostBaseUrl ?? 'http://127.0.0.1:3182' })
+          await client.ensureContent({ identity: current.context.identity, metadata: current.context.metadata })
+          await client.syncTranscript(identity, 'asr', batch)
+        }
+        await runPreTranscription({
+          bvid: identity.bvid,
+          cid: identity.cid,
+          durationSeconds: current.context.metadata.durationSeconds,
+          model: config?.whisperModel ?? 'base',
+          onProgress: progress => { setPreTranscribe({ running: true, message: progress.message, fraction: progress.fraction }) },
+          onSegments: segments => {
+            pending.push(...segments)
+            // Persist per window so a cancelled run still keeps its tail.
+            if (flushTimer === undefined) {
+              flushTimer = setTimeout(() => { flushTimer = undefined; void flush() }, 1_500)
+            }
+          },
+          isCancelled: () => cancelled,
+        })
+        await flush()
+        setPreTranscribe({ running: false, message: '预识别完成，字幕已保存', fraction: 1 })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (!/已取消/.test(message)) setPreTranscribe({ running: false, message: `预识别失败：${message}`, fraction: 0 })
+        else setPreTranscribe(null)
+      } finally {
+        preTranscribeCancel.current = null
+      }
+    })()
+  }
+  const cancelPreTranscription = (): void => { preTranscribeCancel.current?.() }
+
   // One toggle at a time: a double-click must not ride two background
   // toggles and land on the opposite of what the user wanted.
   const toggleInFlight = useRef(false)
@@ -355,6 +411,8 @@ export function App({ subscribe }: {
         onClearSession={clearSession}
         {...(asrConfigured === null ? {} : { asrConfigured })}
         transcriptionNotice={transcriptionNotice}
+        preTranscribe={preTranscribe}
+        {...(hasChromeRuntime ? { onStartPreTranscription: startPreTranscription, onCancelPreTranscription: cancelPreTranscription } : {})}
         settings={settings === null ? null : (
           <SettingsView
             settings={settings}

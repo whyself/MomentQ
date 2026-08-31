@@ -182,7 +182,9 @@ function GeneralSettingsSection({
             memoryCleared = reply?.cleared === true
           } catch { /* background unreachable: archive is cleared regardless */ }
         }
-        setSubtitleResult(memoryCleared ? '已清除存档与当前字幕显示' : '已清除存档')
+        setSubtitleResult(memoryCleared
+          ? '已清除存档与当前字幕显示'
+          : '已清除本机存档（当前字幕显示保留：视频正在转录中，或当前显示的是官方字幕）')
       } catch (error) {
         setSubtitleResult(saveErrorMessage(error, draft.hostBaseUrl))
       } finally {
