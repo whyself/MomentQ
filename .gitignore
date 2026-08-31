@@ -13,3 +13,4 @@ extension/releases/
 extension/prototype/
 
 *.local.json
+session-dump.jsonl

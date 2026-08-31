@@ -148,6 +148,20 @@ function GeneralSettingsSection({
   const [clearResult, setClearResult] = useState<string | null>(null)
   const [subtitleClearing, setSubtitleClearing] = useState(false)
   const [subtitleResult, setSubtitleResult] = useState<string | null>(null)
+  // The data location shown next to the destructive actions, so "清空" never
+  // feels like it operates on something the user cannot see.
+  const [storageRoot, setStorageRoot] = useState<string | null>(null)
+  useEffect(() => {
+    let active = true
+    fetch(new URL('/momentq/api/storage', draft.hostBaseUrl))
+      .then(response => response.json())
+      .then((body: { ok?: unknown; value?: { root?: unknown } }) => {
+        if (!active) return
+        setStorageRoot(body?.ok === true && typeof body.value?.root === 'string' ? body.value.root : null)
+      })
+      .catch(() => { if (active) setStorageRoot(null) })
+    return () => { active = false }
+  }, [draft.hostBaseUrl])
   const clearSubtitleArchive = (): void => {
     if (currentIdentity === undefined || subtitleClearing) return
     if (!window.confirm('清除当前视频的语音识别字幕存档？已转录的内容将从本机删除，且不可恢复。')) return
@@ -219,6 +233,7 @@ function GeneralSettingsSection({
         </Button>
       </Row>
       {clearResult !== null && <div className={rowCss.desc} role="status">{clearResult}</div>}
+      {storageRoot !== null && <div className={rowCss.desc}>当前存储路径：{storageRoot}</div>}
       <Row
         title="清除当前视频字幕存档"
         description={currentIdentity === undefined

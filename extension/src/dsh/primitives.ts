@@ -20,3 +20,10 @@ export {
   IconSettingsOutline14,
   IconSettingsOutline16,
 } from '../vendor/deepseek-harness/packages/client/ui-primitives/src/icons/index.tsx'
+export { Tooltip } from '../vendor/deepseek-harness/packages/client/ui-primitives/src/Tooltip.tsx'
+export type { TooltipSide } from '../vendor/deepseek-harness/packages/client/ui-primitives/src/Tooltip.tsx'
+export { writeClipboard } from '../vendor/deepseek-harness/packages/client/ui-primitives/src/clipboard.ts'
+export {
+  IconCheckOutline16,
+  IconCopyOutline16,
+} from '../vendor/deepseek-harness/packages/client/ui-primitives/src/icons/index.tsx'

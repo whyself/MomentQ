@@ -247,6 +247,35 @@ export function apply(ctx: Context): void {
     },
   }))
 
+  // Storage location for the settings page's data-path display. Read-only
+  // and loopback-gated like every other MomentQ route.
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/momentq/api/storage',
+    async handler(req, res) {
+      const requestOrigin = req.headers.origin
+      const responseOrigin = allowedOrigin(requestOrigin)
+      if (requestOrigin !== undefined && responseOrigin === undefined) {
+        sendJson(res, 403, { ok: false, error: { code: 'invalid-request', message: 'Origin not allowed' } })
+        return
+      }
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, {
+          ...corsHeaders(responseOrigin),
+          'access-control-allow-methods': 'GET, OPTIONS',
+          'access-control-max-age': '600',
+        })
+        res.end()
+        return
+      }
+      if (req.method !== 'GET') {
+        sendJson(res, 405, { ok: false, error: { code: 'invalid-request', message: 'GET required' } }, responseOrigin)
+        return
+      }
+      sendJson(res, 200, { ok: true, value: { root: ctx.momentq.root } }, responseOrigin)
+    },
+  }))
+
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: '/momentq/api/stream',

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type ReactNode } from 'react'
-import { Button, FishLogo, IconCloseOutline16, IconPlusOutline16, IconSendOutline16, MarkdownText } from '../dsh/primitives'
+import { Button, FishLogo, IconCheckOutline16, IconCloseOutline16, IconCopyOutline16, IconPlusOutline16, IconSendOutline16, MarkdownText, Tooltip, writeClipboard } from '../dsh/primitives'
 import { IconPauseOutline16, IconPlayOutline16 } from '../vendor/deepseek-harness/packages/client/ui-primitives/src/icons/index.tsx'
 import modalCss from '../vendor/deepseek-harness/packages/client/ui-primitives/src/Modal.module.css'
 import type { ConversationHistoryEntry, MessageStreamEvent, SubmitMessageResult } from '../shared/host-client'
@@ -11,6 +11,7 @@ import conversationCss from '../vendor/deepseek-harness/packages/client/ui-conve
 import heroCss from '../vendor/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/HeroShell.module.css'
 import inputCss from '../vendor/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/InputBar.module.css'
 import { selectSubtitleWindow } from './subtitle-window'
+import actionsCss from '../vendor/deepseek-harness/packages/client/ui-conversation/src/client/chat/MessageIconActions.module.css'
 import { playbackStamp, splitVideoStamp, withVideoTimeSuffix } from './video-stamp'
 
 function ContextHeader({ state, settings, transcriptionToggle, clearSession }: {
@@ -294,6 +295,37 @@ type ConversationEntry = {
 const markdownCodeLabels = { copyLabel: '复制', copiedLabel: '已复制' }
 
 /**
+ * The vendor copy action reads its labels through the chat locale seat; the
+ * panel only mounts the copy (no branch/clock), so two keys cover it.
+ */
+/**
+ * Copy action for settled assistant answers, mirroring the vendor
+ * MessageIconActions chrome (icon button, tooltip, 1s check swap) without
+ * pulling the vendor component's chat-store type graph into the panel.
+ */
+function AssistantCopyAction({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (timer.current !== null) clearTimeout(timer.current) }, [])
+  const onCopy = (): void => {
+    if (copied) return
+    void writeClipboard(text).then(ok => {
+      if (!ok) return
+      setCopied(true)
+      if (timer.current !== null) clearTimeout(timer.current)
+      timer.current = setTimeout(() => { timer.current = null; setCopied(false) }, 1000)
+    })
+  }
+  return (
+    <Tooltip label={copied ? '已复制' : '复制'} side="bottom">
+      <button type="button" className={actionsCss.action} aria-label={copied ? '已复制' : '复制'} onClick={onCopy}>
+        {copied ? <IconCheckOutline16 /> : <IconCopyOutline16 />}
+      </button>
+    </Tooltip>
+  )
+}
+
+/**
  * Bracketed video timestamps in answers become seek buttons: single points
  * ([MM:SS], [H:MM:SS]) and ranges seek to their start. The model varies the
  * range separator freely (dash, comma, 、, ~, 至/到 — measured in the wild:
@@ -402,13 +434,19 @@ function ConversationTranscript({ entries, pending, error, onSeek }: {
           {entries.map(entry => entry.role === 'user' ? (
             <UserEntry key={entry.id} entry={entry} />
           ) : (
-            <AssistantText
-              key={entry.id}
-              text={entry.text}
-              blocks={entry.blocks}
-              streaming={entry.streaming === true}
-              onSeek={onSeek}
-            />
+            <div key={entry.id} className="momentq-assistant-block">
+              <AssistantText
+                text={entry.text}
+                blocks={entry.blocks}
+                streaming={entry.streaming === true}
+                onSeek={onSeek}
+              />
+              {entry.streaming !== true && (
+                <div className={`momentq-message-actions ${actionsCss.actions}`}>
+                  <AssistantCopyAction text={entry.text} />
+                </div>
+              )}
+            </div>
           ))}
           {pending && <div className={chatCss.turnStatus} role="status" aria-live="polite">Deep diving...</div>}
           {error !== null && <div className={chatCss.openError} role="alert">{error}</div>}
