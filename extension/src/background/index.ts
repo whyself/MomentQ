@@ -1180,7 +1180,42 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   }
 })
 
+/**
+ * Edge honors sidePanel.open() only inside a short user-gesture window, and
+ * an `await chrome.tabs.query(...)` before the call loses the gesture — which
+ * made Alt+Q fail. Track the active tab id reactively instead, so command
+ * handlers can call open() SYNCHRONOUSLY on the first statement.
+ */
+let lastActiveTabId: number | null = null
+function rememberActiveTab(): void {
+  void chrome.tabs.query({ active: true, lastFocusedWindow: true }).then(([tab]) => {
+    if (tab?.id !== undefined) lastActiveTabId = tab.id
+  }).catch(() => {})
+}
+chrome.tabs.onActivated.addListener(({ tabId }) => { lastActiveTabId = tabId })
+chrome.tabs.onRemoved.addListener((tabId) => { if (lastActiveTabId === tabId) rememberActiveTab() })
+rememberActiveTab()
+
+/** Open the side panel synchronously for a gesture-based entry point. */
+function openSidePanelForGesture(): void {
+  const tabId = lastActiveTabId
+  if (tabId !== null) {
+    void chrome.sidePanel.open({ tabId }).catch(() => {})
+    return
+  }
+  // Cold service worker: the cache is still warming. Try the async query —
+  // the gesture may not survive it, but it primes the cache for the next
+  // press (and the toolbar icon remains a reliable opener).
+  void chrome.tabs.query({ active: true, lastFocusedWindow: true }).then(([tab]) => {
+    if (tab?.id === undefined) return
+    lastActiveTabId = tab.id
+    void chrome.sidePanel.open({ tabId: tab.id }).catch(() => {})
+  }).catch(() => {})
+}
+
 chrome.commands.onCommand.addListener((command) => {
+  // The gesture window is shortest here: open the panel first, synchronously.
+  if (command === 'open-side-panel' || command === 'toggle-transcription') openSidePanelForGesture()
   if (command === 'capture-current-frame') {
     void chrome.tabs.query({ active: true, lastFocusedWindow: true }).then(async ([tab]) => {
       const tabId = tab?.id
@@ -1197,30 +1232,17 @@ chrome.commands.onCommand.addListener((command) => {
   if (command === 'toggle-transcription') {
     // A keyboard command is an extension invocation + gesture on the active
     // tab — the same grant the context menu provides — so capture can start
-    // directly from here.
-    void chrome.tabs.query({ active: true, lastFocusedWindow: true }).then(([tab]) => {
-      const tabId = tab?.id
-      if (tabId === undefined) return
-      // The capture session lives in the side panel; if it is closed the
-      // request would broadcast into the void for 8s before the watchdog
-      // gives up silently. Open the panel so the user sees what happens.
-      void chrome.sidePanel.open({ tabId }).catch(() => {})
-      void toggleTranscription(tabId).then(state => {
-        const failure = state?.transcriptionError
-        if (failure !== undefined) reportDiagnostic(`快捷键转录失败：${failure}`)
-      }).catch(() => {})
-    })
+    // directly from here. The panel open already ran synchronously above.
+    const tabId = lastActiveTabId
+    if (tabId === null) return
+    void toggleTranscription(tabId).then(state => {
+      const failure = state?.transcriptionError
+      if (failure !== undefined) reportDiagnostic(`快捷键转录失败：${failure}`)
+    }).catch(() => {})
     return
   }
   if (command !== 'open-side-panel') return
-  void chrome.tabs.query({ active: true, lastFocusedWindow: true }).then(([tab]) => {
-    const tabId = tab?.id
-    if (tabId === undefined) return
-    // Edge only honors sidePanel.open() inside a short gesture window; the
-    // async tabs.query can fall outside it, and the rejection would surface
-    // as an unhandled promise. The toolbar click still opens the panel.
-    return chrome.sidePanel.open({ tabId }).catch(() => {})
-  })
+  openSidePanelForGesture()
 })
 
 /** Periodically re-check video tabs that still have no subtitle track. */
