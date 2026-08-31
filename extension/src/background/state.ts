@@ -15,23 +15,25 @@ export class TabOperationQueue {
 
   run<T>(tabId: number, operation: () => Promise<T>): Promise<T> {
     const previous = this.tails.get(tabId) ?? Promise.resolve()
-    // A single wedged operation would otherwise park every later operation
-    // for the tab — clicks and imports would vanish without a trace. Bound
-    // each one: the queue never blocks behind a hung step for long.
-    const bounded = previous.then(() => new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`tab ${tabId} queued operation timed out`)), 10_000)
-      operation().then(
-        value => {
-          clearTimeout(timer)
-          resolve(value)
-        },
-        error => {
-          clearTimeout(timer)
-          reject(error)
-        },
-      )
-    }))
-    const tail = bounded.then(() => {}, () => {})
+    const result = previous.then(() => operation())
+    // The timeout bounds how long a CALLER waits, not the operation itself:
+    // releasing the queue while the previous operation is still writing let
+    // two operations interleave read-modify-write on the same tab state.
+    // (Operations here are local storage reads/writes only — network never
+    // enters this queue — so a step that exceeds the caller timeout is rare
+    // and the queue briefly pausing behind it is the safer failure.)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const bounded = Promise.race([
+      result,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('MomentQ 内部状态操作超时，请重试')), 10_000)
+      }),
+    ])
+    const tail = result.then(() => {
+      if (timer !== undefined) clearTimeout(timer)
+    }, () => {
+      if (timer !== undefined) clearTimeout(timer)
+    })
     this.tails.set(tabId, tail)
     void tail.then(() => {
       if (this.tails.get(tabId) === tail) this.tails.delete(tabId)
@@ -82,6 +84,8 @@ export function reduceTabState(
       ...(preserve && state.subtitleSegments !== undefined ? { subtitleSegments: state.subtitleSegments } : {}),
       ...(preserve && state.subtitleIdentity !== undefined ? { subtitleIdentity: state.subtitleIdentity } : {}),
       ...(preserve && state.subtitleSource !== undefined ? { subtitleSource: state.subtitleSource } : {}),
+      ...(preserve && state.subtitleTrusted !== undefined ? { subtitleTrusted: state.subtitleTrusted } : {}),
+      ...(preserve && state.subtitleDiagnostic !== undefined ? { subtitleDiagnostic: state.subtitleDiagnostic } : {}),
       ...(preserve && state.transcriptPreview !== undefined ? { transcriptPreview: state.transcriptPreview } : {}),
     }
   }

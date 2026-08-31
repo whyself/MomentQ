@@ -102,6 +102,21 @@ if (bridge.__momentqContentBridge !== true) {
       sendResponse(video !== null && Number.isFinite(video.currentTime) ? Math.max(0, video.currentTime) : null)
       return false
     }
+    if (typeof message === 'object' && message !== null
+      && (message as { type?: unknown }).type === 'MOMENTQ_SEEK_VIDEO') {
+      const seconds = (message as { seconds?: unknown }).seconds
+      const video = currentVideo()
+      if (typeof seconds !== 'number' || !Number.isFinite(seconds) || video === null) {
+        sendResponse(false)
+        return false
+      }
+      // Clamp so a model-hallucinated timestamp past the end lands on the
+      // last frame instead of a no-op.
+      const target = Math.min(Math.max(0, seconds), Number.isFinite(video.duration) ? Math.max(0, video.duration - 0.25) : seconds)
+      video.currentTime = target
+      sendResponse(true)
+      return false
+    }
     if (typeof message !== 'object' || message === null || (message as { type?: unknown }).type !== 'MOMENTQ_CAPTURE_VIDEO_FRAME') return false
     const video = currentVideo()
     if (video === null || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.videoWidth === 0 || video.videoHeight === 0) {

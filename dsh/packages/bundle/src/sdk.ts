@@ -172,6 +172,11 @@ export class MomentQClient {
     return await this.call('deleteContent', { identity }, signal)
   }
 
+  /** Remove every Session log across all content; metadata and transcripts stay. */
+  async clearAllSessions(signal?: AbortSignal): Promise<{ cleared: number; failed: string[] }> {
+    return await this.call('clearAllSessions', {}, signal)
+  }
+
   /** Store a write-only DeepSeek model credential in the Host credential provider. */
   async setModelApiKey(apiKey: string, signal?: AbortSignal): Promise<{ saved: true }> {
     return await this.call('setModelApiKey', { apiKey }, signal)

@@ -52,10 +52,12 @@ const MODEL_API_KEY_REF = credentialRef('DEEPSEEK_API_KEY')
 const requestSchema = z.object({
   method: z.enum([
     'ensureContent', 'getContent', 'getHistory', 'submitMessage', 'syncTranscript', 'archiveSession', 'resetSession', 'deleteSession', 'deleteContent',
-    'setModelApiKey',
+    'clearAllSessions', 'setModelApiKey',
   ]),
   params: z.unknown(),
 }).strict()
+
+const clearAllSessionsParams = z.object({}).strict()
 
 type ApiErrorCode = 'invalid-request' | 'content-not-found' | 'session-conflict' | 'internal'
 
@@ -209,6 +211,11 @@ export function apply(ctx: Context): void {
           case 'deleteContent': {
             const { identity } = identityParams.parse(request.params)
             value = await ctx.momentq.deleteContent(identity)
+            break
+          }
+          case 'clearAllSessions': {
+            clearAllSessionsParams.parse(request.params)
+            value = await ctx.momentq.clearAllSessions()
             break
           }
           case 'setModelApiKey': {

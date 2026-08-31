@@ -137,6 +137,26 @@ function GeneralSettingsSection({
   saveError: string | null
   onSave: () => void
 }) {
+  const [clearing, setClearing] = useState(false)
+  const [clearResult, setClearResult] = useState<string | null>(null)
+  const clearAllSessions = (): void => {
+    if (clearing) return
+    if (!window.confirm('清空所有视频的全部对话记录？字幕与视频信息保留，对话日志会被物理删除且不可恢复。')) return
+    void (async () => {
+      setClearing(true)
+      setClearResult(null)
+      try {
+        const { cleared, failed } = await new MomentQClient({ baseUrl: draft.hostBaseUrl }).clearAllSessions()
+        setClearResult(failed.length === 0
+          ? `已清空 ${cleared} 个视频的对话记录`
+          : `已清空 ${cleared} 个，失败 ${failed.length} 个`)
+      } catch (error) {
+        setClearResult(saveErrorMessage(error, draft.hostBaseUrl))
+      } finally {
+        setClearing(false)
+      }
+    })()
+  }
   return (
     <div>
       <AppearanceRow preference={draft.theme} setTheme={setTheme} />
@@ -155,6 +175,12 @@ function GeneralSettingsSection({
         />
       </Row>
       <SaveArea saving={saving} error={saveError} onSave={onSave} />
+      <Row title="清空所有会话" description="物理删除本机上全部视频的对话日志，字幕与视频信息保留。">
+        <Button variant="ghost" disabled={clearing} onClick={clearAllSessions}>
+          {clearing ? '清空中…' : '清空'}
+        </Button>
+      </Row>
+      {clearResult !== null && <div className={rowCss.desc} role="status">{clearResult}</div>}
     </div>
   )
 }

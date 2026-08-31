@@ -1,6 +1,6 @@
 /** MomentQ Host service: content state, DSH Session routing, and lifecycle management. */
 
-import { mkdir, realpath, rm } from 'node:fs/promises'
+import { mkdir, readdir, realpath, rm } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Context, Service } from '@deepseek-ai/cordis'
@@ -76,6 +76,15 @@ export interface ConversationHistoryEntry {
   text: string
   blocks: readonly string[]
 }
+
+/**
+ * The agent loop projects dynamic runtime context (file policy, approval
+ * policy, workspace facts) into the Session as user messages so the model
+ * sees fresh state each turn. They are model-facing plumbing, never
+ * conversation turns, and both the snapshot and the "cleared" variants
+ * share this prefix.
+ */
+const RUNTIME_CONTEXT_PREFIX = 'Current runtime context'
 
 /** Result of submitting one user message to the active content Session. */
 export interface SubmitMessageResult {
@@ -294,6 +303,7 @@ export class MomentQService extends Service {
         if (event.type === 'user/message') {
           const blocks = event.data.content.filter(block => block.type === 'text').map(block => block.text)
           const text = blocks.join('\n').trim()
+          if (text.startsWith(RUNTIME_CONTEXT_PREFIX)) return []
           return text === '' ? [] : [{ id: String(event.data.id), role: 'user', text, blocks }]
         }
         if (event.type === 'assistant/message') {
@@ -481,6 +491,64 @@ export class MomentQService extends Service {
       await rm(target, { recursive: true, force: true })
       return { deleted: true }
     })
+  }
+
+  /**
+   * Physically remove every Session log across all content, leaving metadata
+   * and transcripts in place. Each content directory is routed through its
+   * per-identity queue so an in-flight stream serializes instead of racing
+   * the teardown.
+   */
+  async clearAllSessions(): Promise<{ cleared: number; failed: string[] }> {
+    const entries = await readdir(this.contentRoot, { withFileTypes: true }).catch(() => [])
+    let cleared = 0
+    const failed: string[] = []
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      const cwd = resolve(this.contentRoot, entry.name)
+      try {
+        const state = await readState(cwd)
+        const removed = await this.forContent(state.identity, async () => {
+          const current = await readState(cwd)
+          const records: MomentQSessionRecord[] = [
+            ...(current.session.active === null ? [] : [current.session.active]),
+            ...current.session.retired.filter(item => item.disposition !== 'deleted'),
+          ]
+          if (records.length === 0) return false
+          let activeHeader: SessionHeader | undefined
+          if (current.session.active !== null) {
+            const agent = await this.ensureAgent(current.session.active, cwd)
+            activeHeader = agent.session.header
+            await this.stopOwnedAgent(agent)
+          }
+          for (const record of records) {
+            await this.removeSessionArtifact(
+              record,
+              cwd,
+              activeHeader?.id === SessionId(record.id) ? activeHeader : undefined,
+            )
+          }
+          // Retired records must survive in state (their generations stay
+          // reserved against future activations); only the logs are gone.
+          const next: MomentQState = {
+            ...current,
+            session: {
+              generation: current.session.generation,
+              active: null,
+              retired: current.session.retired.map(item => item.disposition === 'deleted'
+                ? item
+                : { ...item, disposition: 'deleted' as const }),
+            },
+          }
+          await writeState(cwd, next)
+          return true
+        })
+        if (removed) cleared += 1
+      } catch (error) {
+        failed.push(`${entry.name}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    return { cleared, failed }
   }
 
   private async replaceSession(

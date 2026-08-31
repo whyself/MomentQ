@@ -30,11 +30,14 @@ export type PanelSessionStart = {
 
 type WhisperRuntime = {
   model: WhisperModel
-  pending: Float32Array
+  /** Audio awaiting inference, in arrival order. */
+  queue: Float32Array[]
+  queuedSamples: number
   processing: boolean
   paused: boolean
   totalSamples: number
   lastMediaSeconds: number | null
+  droppedChunks: number
 }
 
 type RunningSession = {
@@ -46,6 +49,14 @@ type RunningSession = {
 }
 
 const WHISPER_CHUNK_SAMPLES = 5 * 16_000
+// Bounded waiting room for audio produced while inference is busy (above all
+// during the first model download, which can run for many minutes). Beyond
+// this window the OLDEST audio is dropped with a visible counter instead of
+// silently losing the session's opening — or growing without bound.
+const WHISPER_MAX_QUEUE_SAMPLES = 60 * 16_000
+// Upper bound on one inference call: merging minutes of audio hurts both
+// latency and timestamp accuracy.
+const WHISPER_MAX_UTTERANCE_SAMPLES = 30 * 16_000
 
 let session: RunningSession | undefined
 
@@ -61,6 +72,10 @@ function reportEvent(tabId: number, event: import('../../../shared/src/companion
 export function sessionClock(seconds: number): void {
   if (session === undefined) return
   if (session.whisper !== undefined) {
+    // While transcription is paused the video keeps playing; freezing the
+    // clock keeps the resumed chunks' timestamps aligned with the audio that
+    // will actually be transcribed instead of skipping the paused span.
+    if (session.whisper.paused) return
     session.whisper.lastMediaSeconds = seconds
     return
   }
@@ -78,16 +93,24 @@ export async function stopPanelSession(): Promise<void> {
   if (current === undefined) return
   session = undefined
   if (current.socket !== undefined) {
+    const socket = current.socket
+    // Detach BEFORE closing: an intentional stop must not fall into the
+    // onclose path and get reported to the user as a companion loss.
+    socket.onclose = null
+    socket.onmessage = null
+    socket.onerror = null
     try {
-      if (current.socket.readyState === WebSocket.OPEN) {
-        current.socket.send(JSON.stringify({ type: 'stop' }))
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'stop' }))
       }
-      current.socket.close()
+      socket.close()
     } catch { /* the socket may already be gone */ }
   }
   for (const track of current.stream.getTracks()) track.stop()
   await current.context.close().catch(() => {})
-  postToBackground({ type: 'MOMENTQ_ASR_SESSION', tabId: null })
+  // stoppedTabId lets the background deactivate THIS tab even when its global
+  // session pointer has already moved to a newer tab (start-over-start handoff).
+  postToBackground({ type: 'MOMENTQ_ASR_SESSION', tabId: null, stoppedTabId: current.tabId })
 }
 
 export function pausePanelSession(paused: boolean): void {
@@ -112,6 +135,11 @@ export async function startPanelSession(request: PanelSessionStart): Promise<voi
       },
     } as unknown as MediaStreamConstraints)
     const context = new AudioContext({ sampleRate: 16_000 })
+    // Register the partial session immediately: EVERY failure below tears
+    // down through stopPanelSession, which only sees the module-level
+    // session — assigning it only at the end used to leak the stream tracks
+    // and the AudioContext on each failed start.
+    session = { tabId: request.tabId, stream: captureStream, context, socket: undefined, whisper: undefined }
     await context.audioWorklet.addModule(chrome.runtime.getURL('capture-worklet.js'))
     const source = context.createMediaStreamSource(captureStream)
     const node = new AudioWorkletNode(context, 'momentq-capture')
@@ -120,6 +148,7 @@ export async function startPanelSession(request: PanelSessionStart): Promise<voi
     if (request.engine === 'baidu') {
       socket = new WebSocket(toWebSocketUrl(request.companionBaseUrl))
       socket.binaryType = 'arraybuffer'
+      session.socket = socket
       socket.onmessage = (event: MessageEvent<string | ArrayBuffer>) => {
         if (typeof event.data !== 'string') return
         let value: unknown
@@ -130,6 +159,14 @@ export async function startPanelSession(request: PanelSessionStart): Promise<voi
         }
         if (isCompanionServerMessage(value)) reportEvent(request.tabId, value)
       }
+      await new Promise<void>((resolve, reject) => {
+        if (socket !== undefined && socket.readyState === WebSocket.OPEN) return resolve()
+        socket?.addEventListener('open', () => resolve(), { once: true })
+        socket?.addEventListener('error', () => reject(new Error('无法连接本地 companion')), { once: true })
+      })
+      // Attach the loss handler only AFTER a successful open: a failed dial
+      // fires 'error' and then 'close', and only a healthy connection may
+      // report 'companion-disconnected'.
       socket.onclose = () => {
         reportEvent(request.tabId, {
           type: 'error',
@@ -138,11 +175,6 @@ export async function startPanelSession(request: PanelSessionStart): Promise<voi
         })
         void stopPanelSession()
       }
-      await new Promise<void>((resolve, reject) => {
-        if (socket !== undefined && socket.readyState === WebSocket.OPEN) return resolve()
-        socket?.addEventListener('open', () => resolve(), { once: true })
-        socket?.addEventListener('error', () => reject(new Error('无法连接本地 companion')), { once: true })
-      })
       socket.send(JSON.stringify({
         type: 'start',
         identity: request.identity,
@@ -150,8 +182,9 @@ export async function startPanelSession(request: PanelSessionStart): Promise<voi
     }
 
     const whisper: WhisperRuntime | undefined = request.engine === 'whisper'
-      ? { model: request.whisperModel, pending: new Float32Array(0), processing: false, paused: false, totalSamples: 0, lastMediaSeconds: null }
+      ? { model: request.whisperModel, queue: [], queuedSamples: 0, processing: false, paused: false, totalSamples: 0, lastMediaSeconds: null, droppedChunks: 0 }
       : undefined
+    session.whisper = whisper
 
     if (request.engine === 'baidu') {
       // Official pacing: 5120-byte (160ms) binary PCM frames shipped at 1x
@@ -176,24 +209,20 @@ export async function startPanelSession(request: PanelSessionStart): Promise<voi
         }
       }
     } else {
-      // Local engine: accumulate ~5s chunks and transcribe sequentially.
+      // Local engine: queue audio in arrival order and transcribe strictly
+      // sequentially. Nothing is dropped while the model loads — the bounded
+      // queue holds up to 60s and drains once inference is ready.
       node.port.onmessage = (event: MessageEvent<Float32Array>) => {
         const chunk = event.data
         if (chunk === undefined || whisper === undefined) return
+        if (whisper.paused) return
         const atRate = context.sampleRate !== 16_000
           ? resampleLinear(chunk, context.sampleRate, 16_000)
           : chunk
-        if (whisper.paused) return
-        const merged = new Float32Array(whisper.pending.length + atRate.length)
-        merged.set(whisper.pending)
-        merged.set(atRate, whisper.pending.length)
-        whisper.pending = merged
+        whisper.queue.push(atRate)
+        whisper.queuedSamples += atRate.length
         whisper.totalSamples += atRate.length
-        if (whisper.pending.length >= WHISPER_CHUNK_SAMPLES) {
-          const audio = whisper.pending
-          whisper.pending = new Float32Array(0)
-          void runWhisperChunk(request.tabId, audio, whisper)
-        }
+        if (whisper.queuedSamples >= WHISPER_CHUNK_SAMPLES) void pumpWhisper(request.tabId, whisper)
       }
     }
     source.connect(node)
@@ -201,7 +230,6 @@ export async function startPanelSession(request: PanelSessionStart): Promise<voi
     // user still hears the video while it is being transcribed.
     source.connect(context.destination)
 
-    session = { tabId: request.tabId, stream: captureStream, context, socket, whisper }
     postToBackground({ type: 'MOMENTQ_ASR_SESSION', tabId: request.tabId })
   } catch (error) {
     const raw = error instanceof Error ? error.message : String(error)
@@ -212,37 +240,77 @@ export async function startPanelSession(request: PanelSessionStart): Promise<voi
         ? '标签页采集启动失败：采集授权可能已随页面刷新失效，请重新通过右键菜单启动'
         : raw,
     })
+    // `session` was registered before any fallible step, so this rollback
+    // always reaches the created stream/context/socket.
     await stopPanelSession()
   }
 }
 
-async function runWhisperChunk(tabId: number, audio: Float32Array, runtime: WhisperRuntime): Promise<void> {
-  if (runtime.processing) {
-    // A previous inference is still running; drop the chunk rather than
-    // queue unbounded (chunks are 5s — next one catches up).
-    return
-  }
+/** Drain the whisper queue sequentially; bounded, ordered, never parallel. */
+async function pumpWhisper(tabId: number, runtime: WhisperRuntime): Promise<void> {
+  if (runtime.processing) return
   runtime.processing = true
+  try {
+    while (runtime.queue.length > 0) {
+      if (session?.whisper !== runtime) return // session ended or replaced
+      // The reader keeps falling behind: drop the OLDEST audio with a
+      // visible counter rather than growing without bound.
+      while (runtime.queuedSamples > WHISPER_MAX_QUEUE_SAMPLES && runtime.queue.length > 1) {
+        const dropped = runtime.queue.shift()
+        if (dropped === undefined) break
+        runtime.queuedSamples -= dropped.length
+        runtime.droppedChunks += 1
+        reportEvent(tabId, { type: 'partial', text: `推理跟不上播放，已跳过最早的 ${runtime.droppedChunks} 段音频` })
+      }
+      const pieces: Float32Array[] = []
+      let samples = 0
+      while (runtime.queue.length > 0 && samples < WHISPER_MAX_UTTERANCE_SAMPLES) {
+        const next = runtime.queue.shift()
+        if (next === undefined) break
+        pieces.push(next)
+        runtime.queuedSamples -= next.length
+        samples += next.length
+      }
+      await transcribeUtterance(tabId, concatSamples(pieces), runtime)
+    }
+  } finally {
+    runtime.processing = false
+  }
+}
+
+async function transcribeUtterance(tabId: number, audio: Float32Array, runtime: WhisperRuntime): Promise<void> {
   const chunkSeconds = audio.length / 16_000
   try {
     reportEvent(tabId, { type: 'partial', text: '本地识别中…' })
     const text = await transcribeChunk(audio, runtime.model, (status: string) => {
       reportEvent(tabId, { type: 'partial', text: status })
     })
-    if (text !== '') {
+    // Attribute finals only while this runtime still owns the live session:
+    // a slow inference must never land its text on a switched video.
+    if (text !== '' && session?.whisper === runtime) {
       const endMedia = runtime.lastMediaSeconds ?? runtime.totalSamples / 16_000
       const startMedia = Math.max(0, endMedia - chunkSeconds)
       reportEvent(tabId, { type: 'final', start: startMedia, end: endMedia, text })
     }
   } catch (error) {
+    if (session?.whisper !== runtime) return
     reportEvent(tabId, {
       type: 'error',
       code: 'provider-connect',
       message: `本地 Whisper 识别失败：${error instanceof Error ? error.message : String(error)}`,
     })
-  } finally {
-    runtime.processing = false
   }
+}
+
+function concatSamples(pieces: Float32Array[]): Float32Array {
+  const total = pieces.reduce((sum, piece) => sum + piece.length, 0)
+  const merged = new Float32Array(total)
+  let offset = 0
+  for (const piece of pieces) {
+    merged.set(piece, offset)
+    offset += piece.length
+  }
+  return merged
 }
 
 function sendAudioFrame(socket: WebSocket, samples: Float32Array): void {

@@ -128,6 +128,25 @@ async function ask(runtime: Runtime, sessionId: string): Promise<GenerateOptions
 }
 
 describe.sequential('assembled MomentQ Bundle runtime', () => {
+  it('keeps runtime-context snapshots out of the conversation history', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'momentq-bundle-history-'))
+    roots.push(root)
+
+    const runtime = await boot(root)
+    await runtime.ctx.momentq.ensureContent(request)
+    await runtime.ctx.momentq.submitMessage(request.identity, '解释一下特征值')
+    // The agent loop projects dynamic runtime context as user messages with
+    // this prefix; a live projection lands the same way.
+    await runtime.ctx.momentq.submitMessage(
+      request.identity,
+      'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\nCurrent DSH file policy: read-only.',
+    )
+    const history = await runtime.ctx.momentq.getHistory(request.identity)
+    expect(history.map(entry => entry.role)).toEqual(['user', 'assistant', 'assistant'])
+    expect(history.some(entry => entry.text.startsWith('Current runtime context'))).toBe(false)
+    await disposeRuntime(runtime.ctx)
+  })
+
   it('persists one composed Agent and resumes it without credentials', async () => {
     const root = await mkdtemp(join(tmpdir(), 'momentq-bundle-e2e-'))
     roots.push(root)

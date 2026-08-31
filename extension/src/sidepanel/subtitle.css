@@ -92,3 +92,29 @@
   text-align: center;
   opacity: 0.85;
 }
+
+/* Answer timestamps render as seek pills that jump the video to that time.
+ * Inline-flex so they flow inside the answer text instead of breaking it. */
+.momentq-seek {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 4px;
+  padding: 1px 8px;
+  border: 1px solid var(--dsw-alias-label-secondary);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font-size: 12.5px;
+  line-height: 1.6;
+  cursor: pointer;
+  vertical-align: baseline;
+}
+
+.momentq-seek:hover {
+  border-color: var(--dsw-alias-label-primary);
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 8%, transparent);
+}
+
+.momentq-seek:active {
+  transform: translateY(1px);
+}

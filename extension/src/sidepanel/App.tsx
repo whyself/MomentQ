@@ -151,6 +151,28 @@ export function App({ subscribe }: {
     return await chrome.runtime.sendMessage({ type: 'MOMENTQ_CAPTURE_CURRENT_FRAME' }) as string | null
   }
 
+  // Answer timestamps seek the video directly: the panel talks to the content
+  // script over tabs messaging, no background round-trip needed.
+  const seekTo = useCallback((seconds: number) => {
+    const current = state
+    if (current === null) return
+    try {
+      void chrome.tabs.sendMessage(current.tabId, { type: 'MOMENTQ_SEEK_VIDEO', seconds })
+        .catch(() => {})
+    } catch { /* tabs bridge unavailable */ }
+  }, [state?.tabId])
+
+  const clearSession = useCallback(async () => {
+    const current = state
+    if (current === null || settings === null) return
+    const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
+    await client.ensureContent({
+      identity: current.context.identity,
+      metadata: current.context.metadata,
+    })
+    await client.deleteSession(current.context.identity)
+  }, [state, settings])
+
   function toggleTranscription(): void {
     if (state === null) return
     void (async () => {
@@ -281,6 +303,8 @@ export function App({ subscribe }: {
         onCaptureFrame={captureCurrentFrame}
         onSubmit={submitMessage}
         {...(hasChromeRuntime ? { onToggleTranscription: toggleTranscription } : {})}
+        {...(hasChromeRuntime && typeof chrome !== 'undefined' && chrome.tabs !== undefined ? { onSeekTo: seekTo } : {})}
+        onClearSession={clearSession}
         {...(asrConfigured === null ? {} : { asrConfigured })}
         transcriptionNotice={transcriptionNotice}
         settings={settings === null ? null : (

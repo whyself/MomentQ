@@ -134,10 +134,20 @@ export type ToggleCurrentTranscriptionMessage = {
 
 export type CaptureCurrentFrameMessage = {
   type: 'MOMENTQ_CAPTURE_CURRENT_FRAME'
+  /** Panel → background: the tab whose video to capture (else active tab). */
+  tabId?: number
 }
 
 export type GetCurrentVideoTimeMessage = {
   type: 'MOMENTQ_GET_CURRENT_VIDEO_TIME'
+  /** Panel → background: the tab whose clock to read (else active tab). */
+  tabId?: number
+}
+
+/** Panel → content script: seek the active video to an answer's timestamp. */
+export type SeekVideoMessage = {
+  type: 'MOMENTQ_SEEK_VIDEO'
+  seconds: number
 }
 
 export type TabStateChangedMessage = {
@@ -184,6 +194,8 @@ export type AsrQueryMessage = { type: 'MOMENTQ_ASR_QUERY' }
 export type AsrSessionMessage = {
   type: 'MOMENTQ_ASR_SESSION'
   tabId: number | null
+  /** On tabId:null: the tab whose session actually ended (multi-tab handoff). */
+  stoppedTabId?: number
 }
 
 export type AsrEventMessage = {

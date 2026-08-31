@@ -56,7 +56,6 @@ async function writeProbeResult(tabId: number, bvid: string, cid: string, diagno
 
 /** Tab owning the single offscreen ASR session, if any. */
 let asrTabId: number | null = null
-let clockPollTimer: ReturnType<typeof setInterval> | undefined
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -126,15 +125,6 @@ function reportDiagnostic(message: string): void {
   }).catch(() => {})
 }
 
-async function ensureOffscreenDocument(): Promise<void> {
-  if (await chrome.offscreen.hasDocument()) return
-  await chrome.offscreen.createDocument({
-    url: 'offscreen.html',
-    reasons: ['USER_MEDIA'],
-    justification: 'Capture tab audio for MomentQ speech recognition',
-  })
-}
-
 async function closeOffscreenIfIdle(): Promise<void> {
   if (asrTabId !== null) return
   try {
@@ -142,38 +132,16 @@ async function closeOffscreenIfIdle(): Promise<void> {
   } catch { /* the document may already be gone */ }
 }
 
-function stopClockPolling(): void {
-  if (clockPollTimer !== undefined) {
-    clearInterval(clockPollTimer)
-    clockPollTimer = undefined
-  }
-}
-
-function startClockPolling(): void {
-  if (clockPollTimer !== undefined) return
-  // The side panel polls HTMLVideoElement.currentTime for its own ticker;
-  // the recognition stream needs the same clock to anchor transcripts to
-  // the media timeline, so poll the content script directly.
-  clockPollTimer = setInterval(() => {
-    const tabId = asrTabId
-    if (tabId === null) {
-      stopClockPolling()
-      return
-    }
-    void chrome.tabs.sendMessage(tabId, { type: 'MOMENTQ_GET_CURRENT_VIDEO_TIME' })
-      .then((value: unknown) => {
-        if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return
-        sendToOffscreen({ type: 'MOMENTQ_ASR_CLOCK', tabId, mediaTime: value })
-      })
-      .catch(() => {})
-  }, 250)
-}
-
-/** Tear down the capture pipeline for the tab that owns it. */
-async function stopAsrSession(): Promise<void> {
+/**
+ * Tear down the capture pipeline. With a target tab, the teardown only
+ * applies when that tab still owns the session — a newer tab's start must
+ * never be killed by an older tab's late deactivation.
+ */
+async function stopAsrSession(targetTabId?: number): Promise<void> {
+  if (targetTabId !== undefined && asrTabId !== targetTabId) return
   if (asrTabId === null) return
-  stopClockPolling()
-  sendToOffscreen({ type: 'MOMENTQ_ASR_STOP' })
+  const owner = asrTabId
+  sendToOffscreen({ type: 'MOMENTQ_ASR_STOP', tabId: owner })
   asrTabId = null
   await closeOffscreenIfIdle()
 }
@@ -181,18 +149,22 @@ async function stopAsrSession(): Promise<void> {
 /** Mark a tab's transcription inactive and tear its session down. */
 async function deactivateTranscription(tabId: number, state: MomentQTabState, error?: string): Promise<MomentQTabState> {
   if (error !== undefined) reportDiagnostic(`转录停止：${error}`)
-  const { transcriptPreview: _preview, ...withoutPreview } = state
+  const { transcriptPreview: _preview, transcriptionError: _error, ...withoutAsrUi } = state
   // subtitleSource stays as provenance for the imported finals; ownership is
-  // keyed on the live transcription state, not on this field.
+  // keyed on the live transcription state, not on this field. A clean stop
+  // also CLEARS any stale error so the panel does not show an old failure
+  // above a fresh session.
   const next: MomentQTabState = {
-    ...withoutPreview,
+    ...withoutAsrUi,
     transcription: 'inactive',
     ...(error === undefined ? {} : { transcriptionError: error }),
   }
   await writeState(tabId, next)
   publishState(tabId, next)
-  await stopAsrSession()
+  await stopAsrSession(tabId)
   await closeOffscreenIfIdle()
+  // Flush any unsynced local-engine finals so a Host answer can cite them.
+  void syncAsrTranscript(tabId)
   return next
 }
 
@@ -205,15 +177,24 @@ async function deactivateTranscription(tabId: number, state: MomentQTabState, er
  */
 const BEGIN_TIMEOUT_MS = 12_000
 const START_ACK_TIMEOUT_MS = 8_000
-let startAckTimer: ReturnType<typeof setTimeout> | undefined
+const startAckTimers = new Map<number, ReturnType<typeof setTimeout>>()
+
+function clearStartAckWatchdog(tabId: number): void {
+  const timer = startAckTimers.get(tabId)
+  if (timer !== undefined) {
+    clearTimeout(timer)
+    startAckTimers.delete(tabId)
+  }
+}
 
 function armStartAckWatchdog(tabId: number): void {
-  if (startAckTimer !== undefined) clearTimeout(startAckTimer)
-  startAckTimer = setTimeout(() => {
-    startAckTimer = undefined
+  clearStartAckWatchdog(tabId)
+  const timer = setTimeout(() => {
+    startAckTimers.delete(tabId)
     if (asrTabId !== tabId) return
-    // The offscreen never confirmed the session; ask it directly and
-    // surface the verdict instead of leaving the toggle 'active' forever.
+    // The panel never confirmed the session; ask it directly (it answers via
+    // sendResponse) and surface the verdict instead of leaving the toggle
+    // 'active' forever.
     void chrome.runtime.sendMessage({ type: 'MOMENTQ_ASR_QUERY' }).then(reply => {
       const sessionTab = (reply as { tabId?: number } | null)?.tabId
       if (asrTabId === tabId && sessionTab !== tabId) {
@@ -225,6 +206,7 @@ function armStartAckWatchdog(tabId: number): void {
       }
     }).catch(() => {})
   }, START_ACK_TIMEOUT_MS)
+  startAckTimers.set(tabId, timer)
 }
 
 async function beginTranscription(tabId: number, _streamId: string | undefined): Promise<MomentQTabState | null> {
@@ -260,7 +242,6 @@ async function beginTranscription(tabId: number, _streamId: string | undefined):
       await writeState(tabId, next)
       publishState(tabId, next)
       asrTabId = tabId
-      startClockPolling()
       // The panel mints AND consumes the stream id in its own context; it
       // confirms via MOMENTQ_ASR_SESSION, which the ack watchdog covers.
       void chrome.runtime.sendMessage({
@@ -294,7 +275,9 @@ async function applyAsrEvent(message: AsrEventMessage): Promise<void> {
   if (!isCompanionServerMessage(message.event)) return
   await tabOperations.run(tabId, async () => {
     const state = await readState(tabId)
-    if (state === null) return
+    // Events from an ended session (stale finals after a video switch, a
+    // socket draining after a stop) must never touch the fresh state.
+    if (state === null || state.transcription === 'inactive') return
     const event = message.event
     if (event.type === 'ready') {
       if (state.transcriptionError === undefined) return
@@ -323,15 +306,25 @@ async function applyAsrEvent(message: AsrEventMessage): Promise<void> {
       }
       await writeState(tabId, next)
       publishState(tabId, next)
+      scheduleAsrTranscriptSync(tabId)
       return
     }
     if (event.type === 'persisted') return
-    // Errors: a lost provider/companion ends recognition; transient capture
-    // issues are surfaced without tearing the session down.
+    // A lost upstream (Wi-Fi blip) is retried by the companion on the next
+    // audio frame — killing the session here would end transcription on the
+    // first hiccup. The next 'ready' clears the note.
+    if (event.code === 'provider-connect') {
+      reportDiagnostic(`转录中断，等待重连：${event.message}`)
+      const next = { ...state, transcriptionError: event.message }
+      await writeState(tabId, next)
+      publishState(tabId, next)
+      return
+    }
+    // Remaining errors end recognition; transient capture issues are
+    // surfaced without tearing the session down.
     const fatal = event.code === 'provider-not-configured'
       || event.code === 'companion-disconnected'
       || event.code === 'capture-start'
-      || event.code === 'provider-connect'
     if (fatal) await deactivateTranscription(tabId, state, event.message)
     else {
       reportDiagnostic(`转录错误：${event.message}`)
@@ -342,26 +335,59 @@ async function applyAsrEvent(message: AsrEventMessage): Promise<void> {
   })
 }
 
+// The local Whisper engine has no server side to persist finals, so the
+// background pushes them to the Host (throttled) — otherwise transcript.jsonl
+// stays empty for local-engine sessions and answers lose their evidence.
+const asrSyncTimers = new Map<number, ReturnType<typeof setTimeout>>()
+const ASR_SYNC_INTERVAL_MS = 8_000
+
+function scheduleAsrTranscriptSync(tabId: number): void {
+  if (asrSyncTimers.has(tabId)) return
+  asrSyncTimers.set(tabId, setTimeout(() => {
+    asrSyncTimers.delete(tabId)
+    void syncAsrTranscript(tabId)
+  }, ASR_SYNC_INTERVAL_MS))
+}
+
+async function syncAsrTranscript(tabId: number): Promise<void> {
+  try {
+    const state = await readState(tabId)
+    if (state?.context.kind !== 'vod' || state.subtitleSource !== 'asr') return
+    if ((state.subtitleSegments?.length ?? 0) === 0) return
+    const settings = await loadSettings()
+    // The companion already persists baidu-engine finals; skip to avoid
+    // double writes.
+    if (settings.asrProvider !== 'whisper-local') return
+    const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
+    await client.ensureContent({ identity: state.context.identity, metadata: state.context.metadata })
+    await client.syncTranscript(state.context.identity, 'asr', (state.subtitleSegments ?? []).slice(-5000))
+  } catch {
+    // Persistence is best-effort here; the next final reschedules it.
+  }
+}
+
 async function applyAsrSession(message: AsrSessionMessage): Promise<void> {
   if (message.tabId !== null) {
     asrTabId = message.tabId
-    if (startAckTimer !== undefined) {
-      clearTimeout(startAckTimer)
-      startAckTimer = undefined
-    }
-    startClockPolling()
+    clearStartAckWatchdog(message.tabId)
     return
   }
-  // The offscreen session ended (socket loss or stop). Deactivate the owning
-  // tab's transcription state so the UI reflects reality.
-  const tabId = asrTabId
-  asrTabId = null
-  stopClockPolling()
+  // The panel session ended. With stoppedTabId the panel tells us WHICH
+  // session ended: during a start-over-start handoff the global pointer may
+  // already name the new tab, and its fresh state must survive the old tab's
+  // teardown.
+  const stoppedTabId = message.stoppedTabId ?? null
+  const tabId = stoppedTabId ?? asrTabId
+  if (stoppedTabId === null || asrTabId === stoppedTabId) {
+    asrTabId = null
+    if (stoppedTabId !== null) clearStartAckWatchdog(stoppedTabId)
+  }
   if (tabId !== null) {
     await tabOperations.run(tabId, async () => {
       const state = await readState(tabId)
       if (state === null || state.transcription === 'inactive') return
-      await deactivateTranscription(tabId, state, '转录已停止')
+      // An intentional stop is not an error: state clears without one.
+      await deactivateTranscription(tabId, state)
     })
   }
   await closeOffscreenIfIdle()
@@ -373,21 +399,6 @@ async function restoreAsrSession(): Promise<void> {
   if (reply !== null && isRecord(reply) && reply.type === 'MOMENTQ_ASR_SESSION') {
     await applyAsrSession(reply)
   }
-}
-
-/**
- * A freshly created offscreen document has not necessarily registered its
- * message listener when chrome.offscreen.createDocument resolves; a START
- * sent into that gap is dropped without any error and the toggle just sits
- * there. Probe until the offscreen answers, then send.
- */
-async function waitUntilOffscreenReady(): Promise<boolean> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const reply = await chrome.runtime.sendMessage({ type: 'MOMENTQ_ASR_QUERY' }).catch(() => null) as AsrSessionMessage | null
-    if (reply !== null && isRecord(reply) && reply.type === 'MOMENTQ_ASR_SESSION') return true
-    await new Promise(resolve => setTimeout(resolve, 250))
-  }
-  return false
 }
 
 /**
@@ -436,11 +447,13 @@ async function applyContextUnlocked(tabId: number, context: BilibiliContext | nu
   const previous = await readState(tabId)
   const next = reduceTabState(previous, { type: 'SET_CONTEXT', tabId, context })
   // A part/video switch resets transcription to 'inactive' (identity change
-  // drops preserve) — the capture session must be torn down with it, or the
-  // panel keeps transcribing whatever audio still flows while every control
-  // shows "start" again.
-  if (previous !== null && previous.transcription !== 'inactive' && next?.transcription === 'inactive') {
-    void stopAsrSession()
+  // drops preserve), and navigating OUT of Bilibili drops the whole state —
+  // the capture session must be torn down in BOTH cases, or the panel keeps
+  // transcribing whatever audio still flows while every control shows
+  // "start" again.
+  if (previous !== null && previous.transcription !== 'inactive'
+    && (next === null || next.transcription === 'inactive')) {
+    void stopAsrSession(tabId)
   }
   await writeState(tabId, next)
   if (JSON.stringify(previous) !== JSON.stringify(next)) publishState(tabId, next)
@@ -782,7 +795,12 @@ async function toggleTranscriptionUnlocked(tabId: number): Promise<MomentQTabSta
     await writeState(tabId, next)
     publishState(tabId, next)
   }
-  sendToOffscreen({ type: nextTranscription === 'paused' ? 'MOMENTQ_ASR_PAUSE' : 'MOMENTQ_ASR_RESUME' })
+  // Scoped: with several windows/panels open, a global pause/resume/stop
+  // would act on whichever tab happens to own the live session.
+  sendToOffscreen({
+    type: nextTranscription === 'paused' ? 'MOMENTQ_ASR_PAUSE' : 'MOMENTQ_ASR_RESUME',
+    tabId,
+  })
   return next
 }
 
@@ -884,7 +902,13 @@ async function handleRequest(
   }
 
   if (type === 'MOMENTQ_CAPTURE_CURRENT_FRAME') {
-    const active = sender.tab ?? (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]
+    const requestedTab = typeof message.tabId === 'number' && Number.isSafeInteger(message.tabId)
+      ? message.tabId
+      : undefined
+    const active = sender.tab
+      ?? (requestedTab !== undefined
+        ? await chrome.tabs.get(requestedTab).catch(() => null)
+        : (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0])
     if (active?.id !== undefined) {
       const grabFrame = (): Promise<string | null> => chrome.tabs.sendMessage(active.id!, { type: 'MOMENTQ_CAPTURE_VIDEO_FRAME' })
         .then((value: unknown) => typeof value === 'string' && value.startsWith('data:image/') ? value : null)
@@ -902,7 +926,15 @@ async function handleRequest(
   }
 
   if (type === 'MOMENTQ_GET_CURRENT_VIDEO_TIME') {
-    const active = sender.tab ?? (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]
+    // The panel names its own tab: falling back to the last-focused window
+    // let a dual-window setup read the OTHER window's video clock.
+    const requestedTab = typeof message.tabId === 'number' && Number.isSafeInteger(message.tabId)
+      ? message.tabId
+      : undefined
+    const active = sender.tab
+      ?? (requestedTab !== undefined
+        ? await chrome.tabs.get(requestedTab).catch(() => null)
+        : (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0])
     if (active?.id === undefined) return null
     const readTime = (): Promise<number | null> => chrome.tabs.sendMessage(active.id!, { type: 'MOMENTQ_GET_CURRENT_VIDEO_TIME' })
       .then((value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null)
@@ -942,7 +974,8 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   publishRevisions.delete(tabId)
-  if (asrTabId === tabId) void stopAsrSession()
+  if (asrTabId === tabId) void stopAsrSession(tabId)
+  clearStartAckWatchdog(tabId)
   void tabOperations.run(tabId, () => writeState(tabId, reduceTabState(null, { type: 'REMOVE_TAB' })))
 })
 
@@ -978,6 +1011,10 @@ chrome.commands.onCommand.addListener((command) => {
     void chrome.tabs.query({ active: true, lastFocusedWindow: true }).then(([tab]) => {
       const tabId = tab?.id
       if (tabId === undefined) return
+      // The capture session lives in the side panel; if it is closed the
+      // request would broadcast into the void for 8s before the watchdog
+      // gives up silently. Open the panel so the user sees what happens.
+      void chrome.sidePanel.open({ tabId }).catch(() => {})
       void toggleTranscription(tabId).then(state => {
         const failure = state?.transcriptionError
         if (failure !== undefined) reportDiagnostic(`快捷键转录失败：${failure}`)
@@ -1033,6 +1070,9 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId !== 'momentq-toggle-transcription') return
   const tabId = tab?.id
   if (tabId === undefined) return
+  // The capture session lives in the side panel; open it so a start from the
+  // menu is visible instead of broadcasting into a closed panel.
+  void chrome.sidePanel.open({ tabId }).catch(() => {})
   void toggleTranscription(tabId).then(state => {
     const failure = state?.transcriptionError
     if (failure !== undefined) reportDiagnostic(`菜单转录失败：${failure}`)

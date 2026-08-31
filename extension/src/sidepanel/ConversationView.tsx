@@ -12,10 +12,11 @@ import heroCss from '../vendor/deepseek-harness/packages/client/ui-conversation/
 import inputCss from '../vendor/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/InputBar.module.css'
 import { selectSubtitleWindow } from './subtitle-window'
 
-function ContextHeader({ state, settings, transcriptionToggle }: {
+function ContextHeader({ state, settings, transcriptionToggle, clearSession }: {
   state: MomentQTabState | null
   settings: ReactNode
   transcriptionToggle: ReactNode
+  clearSession: ReactNode
 }) {
   const metadata = state?.context.metadata
   const part = state?.context.kind === 'vod' ? state.context.metadata.part : undefined
@@ -46,6 +47,7 @@ function ContextHeader({ state, settings, transcriptionToggle }: {
         </div>
         <div className={conversationCss.headerActions}>
           {transcriptionToggle}
+          {clearSession}
           {settings}
         </div>
       </div>
@@ -271,10 +273,24 @@ type ConversationEntry = {
 
 const markdownCodeLabels = { copyLabel: '复制', copiedLabel: '已复制' }
 
-function AssistantText({ text, blocks, streaming }: {
+/**
+ * Bracketed video timestamps in answers become seek buttons: single points
+ * ([MM:SS], [H:MM:SS]) and ranges ([MM:SS–MM:SS]) seek to their start. Bare
+ * forms never match, so ratios like 16:9 stay inert prose.
+ */
+const TIMESTAMP_PATTERN = /\[(\d{1,2}:[0-5]?\d(?::[0-5]?\d)?)(?:\s*[–—-]\s*\d{1,2}:[0-5]?\d(?::[0-5]?\d)?)?\]/g
+
+function timestampSeconds(value: string): number | null {
+  const parts = value.split(':').map(Number)
+  if (parts.length < 2 || parts.some(part => !Number.isFinite(part))) return null
+  return parts.reduce((total, part) => total * 60 + part, 0)
+}
+
+function AssistantText({ text, blocks, streaming, onSeek }: {
   text: string
   blocks?: Readonly<Record<number, string>> | undefined
   streaming: boolean
+  onSeek: ((seconds: number) => void) | undefined
 }) {
   const markdownBlocks = blocks === undefined
     ? [text]
@@ -282,23 +298,67 @@ function AssistantText({ text, blocks, streaming }: {
   return (
     <div className={assistantCss.root}>
       <div className={assistantCss.body}>
-        {markdownBlocks.map((block, index) => (
-          <MarkdownText
-            key={index}
-            text={block}
-            streaming={streaming}
-            codeLabels={markdownCodeLabels}
-          />
-        ))}
+        {markdownBlocks.map((block, index) => {
+          if (onSeek === undefined || !block.includes('[')) {
+            return (
+              <MarkdownText
+                key={index}
+                text={block}
+                streaming={streaming}
+                codeLabels={markdownCodeLabels}
+              />
+            )
+          }
+          const segments: ReactNode[] = []
+          let cursor = 0
+          for (const match of block.matchAll(TIMESTAMP_PATTERN)) {
+            const start = match.index ?? 0
+            if (start > cursor) {
+              segments.push(
+                <MarkdownText
+                  key={`${index}:t${cursor}`}
+                  text={block.slice(cursor, start)}
+                  streaming={streaming}
+                  codeLabels={markdownCodeLabels}
+                />,
+              )
+            }
+            const seconds = timestampSeconds(match[1] ?? '')
+            segments.push(
+              <button
+                key={`${index}:s${start}`}
+                type="button"
+                className="momentq-seek"
+                title={seconds === null ? undefined : `跳转到 ${match[1]}`}
+                onClick={() => { if (seconds !== null) onSeek(seconds) }}
+              >
+                {match[0].slice(1, -1)}
+              </button>,
+            )
+            cursor = start + match[0].length
+          }
+          if (cursor < block.length || segments.length === 0) {
+            segments.push(
+              <MarkdownText
+                key={`${index}:t${cursor}`}
+                text={block.slice(cursor)}
+                streaming={streaming}
+                codeLabels={markdownCodeLabels}
+              />,
+            )
+          }
+          return <div key={index} className="momentq-seek-body">{segments}</div>
+        })}
       </div>
     </div>
   )
 }
 
-function ConversationTranscript({ entries, pending, error }: {
+function ConversationTranscript({ entries, pending, error, onSeek }: {
   entries: ConversationEntry[]
   pending: boolean
   error: string | null
+  onSeek: ((seconds: number) => void) | undefined
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -328,6 +388,7 @@ function ConversationTranscript({ entries, pending, error }: {
               text={entry.text}
               blocks={entry.blocks}
               streaming={entry.streaming === true}
+              onSeek={onSeek}
             />
           ))}
           {pending && <div className={chatCss.turnStatus} role="status" aria-live="polite">Deep diving...</div>}
@@ -338,7 +399,7 @@ function ConversationTranscript({ entries, pending, error }: {
   )
 }
 
-export function ConversationView({ state, capturedFrame, playbackTime, settings, asrConfigured, transcriptionNotice, onCaptureFrame, onLoadHistory, onSubmit, onToggleTranscription }: {
+export function ConversationView({ state, capturedFrame, playbackTime, settings, asrConfigured, transcriptionNotice, onCaptureFrame, onLoadHistory, onSubmit, onToggleTranscription, onSeekTo, onClearSession }: {
   state: MomentQTabState | null
   capturedFrame?: string | null
   playbackTime: number | undefined
@@ -355,6 +416,10 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
     signal: AbortSignal,
   ) => Promise<SubmitMessageResult>
   onToggleTranscription?: () => void
+  /** Seek the active video; undefined keeps timestamps as plain text. */
+  onSeekTo?: (seconds: number) => void
+  /** Delete the current conversation log and start a fresh Session. */
+  onClearSession?: () => Promise<void>
 }) {
   const [draft, setDraft] = useState('')
   const [frame, setFrame] = useState<FrameAttachment | null>(null)
@@ -418,6 +483,27 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
   }, [contentKey, onLoadHistory])
 
   useEffect(() => () => { activeRequest.current?.abort() }, [])
+
+  const [clearing, setClearing] = useState(false)
+  const clearSession = (): void => {
+    if (state === null || clearing) return
+    if (!window.confirm('清空当前视频的全部对话记录？此操作不可恢复。')) return
+    void (async () => {
+      setClearing(true)
+      try {
+        if (onClearSession !== undefined) await onClearSession()
+        activeRequest.current?.abort()
+        activeRequest.current = null
+        setEntries([])
+        setPending(false)
+        setError(null)
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : '清空对话失败')
+      } finally {
+        setClearing(false)
+      }
+    })()
+  }
 
   const captureFrame = (): void => {
     if (state === null || pending) return
@@ -562,6 +648,18 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
         transcriptionToggle={onToggleTranscription === undefined
           ? null
           : <TranscriptionToggle state={state} asrConfigured={asrConfigured ?? null} onToggle={onToggleTranscription} />}
+        clearSession={state === null || !active ? null : (
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label="清空对话"
+            title="清空当前视频的对话记录"
+            disabled={clearing}
+            onClick={clearSession}
+          >
+            清空
+          </Button>
+        )}
       />
       <div className={conversationCss.scrollBody}>
         {asrUnconfigured && asrWarningLatched && (
@@ -580,7 +678,7 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
           </div>
         )}
         <div className={conversationCss.viewArea}>
-          {active ? <ConversationTranscript entries={entries} pending={pending} error={error} /> : (
+          {active ? <ConversationTranscript entries={entries} pending={pending} error={error} onSeek={onSeekTo} /> : (
             <div className={heroCss.root}>
               <div className={heroCss.stack}>
                 <div className={heroCss.headline}>
