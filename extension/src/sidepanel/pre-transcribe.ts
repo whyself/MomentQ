@@ -177,10 +177,21 @@ function extractAudioSpecificConfig(bytes: Uint8Array): Uint8Array | undefined {
 function demuxAudio(fileBytes: ArrayBuffer): Promise<Extraction> {
   return new Promise((resolve, reject) => {
     const extraction: Extraction = { samples: [], timescale: 0, sampleRate: 0, channels: 0, description: undefined }
+    // Completion by declared count: mp4box's onFlush never fires for a
+    // streamed fMP4 appended in one buffer (verified on a real Bilibili
+    // m4s — all samples arrive within seconds, flush hangs forever).
+    let expected: number | null = null
+    let settled = false
+    const finish = (): void => {
+      if (settled) return
+      settled = true
+      resolve(extraction)
+    }
     const file = MP4Box.createFile() as unknown as Mp4FileLike
     type TrackInfo = {
       id: number
       timescale: number
+      nb_samples?: number
       audio?: { sample_rate?: number; channel_count?: number }
     }
     file.onReady = ((info: { audioTracks: TrackInfo[] }) => {
@@ -193,8 +204,11 @@ function demuxAudio(fileBytes: ArrayBuffer): Promise<Extraction> {
       extraction.sampleRate = track.audio?.sample_rate ?? 0
       extraction.channels = track.audio?.channel_count ?? 0
       extraction.description = extractAudioSpecificConfig(new Uint8Array(fileBytes))
+      expected = track.nb_samples ?? null
       file.setExtractionOptions(track.id, null, { nbSamples: 1000 })
       file.start()
+      // Safety net: a truncated stream may never reach the declared count.
+      setTimeout(finish, 10_000)
     }) as never
     file.onSamples = ((_trackId: number, _ref: unknown, samples: SampleLike[]) => {
       for (const sample of samples) {
@@ -206,8 +220,8 @@ function demuxAudio(fileBytes: ArrayBuffer): Promise<Extraction> {
           is_sync: sample.is_sync,
         })
       }
+      if (expected !== null && extraction.samples.length >= expected) finish()
     }) as never
-    file.onFlush = () => resolve(extraction)
     // mp4box requires fileStart = 0 on the buffer it appends.
     const buffer = fileBytes as ArrayBuffer & { fileStart: number }
     buffer.fileStart = 0
