@@ -51,3 +51,15 @@
   cursor: pointer;
   padding: 2px 4px;
 }
+
+/* Failure text wraps instead of clipping across the strip. */
+.momentq-pretranscribe {
+  flex-wrap: wrap;
+}
+
+.momentq-pretranscribe-text {
+  white-space: normal;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

@@ -1008,7 +1008,11 @@ async function handleRequest(
     const url = typeof request.url === 'string' ? request.url : ''
     try {
       const response = await fetch(url, {
-        headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) MomentQ/1.1', referer: 'https://www.bilibili.com/' },
+        // `referrer` is the Fetch API's controlled way (a `referer` HEADER is
+        // a forbidden header name — the browser ignores it and attaches the
+        // extension origin instead, which is what the CDN 403s on).
+        referrer: 'https://www.bilibili.com/',
+        headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36' },
       })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const buffer = await response.arrayBuffer()

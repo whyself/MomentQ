@@ -96,7 +96,7 @@ export async function startCompanionServer(
       })
       response.end(content)
     }
-    if (request.method === 'OPTIONS' && (path === '/health' || path === '/config' || path === '/log')) {
+    if (request.method === 'OPTIONS' && (path === '/health' || path === '/config' || path === '/log' || path === '/proxy/audio')) {
       response.writeHead(204, {
         ...cors,
         'access-control-allow-methods': 'GET, POST, OPTIONS',
@@ -182,6 +182,51 @@ export async function startCompanionServer(
         return
       }
       sendJson(405, { ok: false, error: { code: 'invalid-request', message: 'GET or POST required' } })
+      return
+    }
+    // Audio fetch proxy for offline pre-transcription: the Bilibili CDN
+    // requires both a browser UA and a bilibili.com Referer, and the
+    // extension's contexts can set neither (both are protected headers).
+    // Node has full header control, and this stays on the user's machine.
+    if (path === '/proxy/audio' || path === '/proxy/audio/') {
+      if (request.method !== 'GET') {
+        sendJson(405, { ok: false, error: { code: 'invalid-request', message: 'GET required' } })
+        return
+      }
+      const target = new URL(request.url ?? '/', 'http://x').searchParams.get('url')
+      if (target === null || !/^https:\/\/([^/]*\.)?(bilivideo\.com|akamaized\.net)\//.test(target)) {
+        sendJson(400, { ok: false, error: { code: 'invalid-request', message: 'url must be a Bilibili CDN audio URL' } })
+        return
+      }
+      try {
+        const upstream = await fetch(target, {
+          headers: {
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+            referer: 'https://www.bilibili.com/',
+          },
+        })
+        if (!upstream.ok || upstream.body === null) {
+          sendJson(502, { ok: false, error: { code: 'upstream-failed', message: `CDN returned HTTP ${upstream.status}` } })
+          return
+        }
+        response.writeHead(200, {
+          'content-type': upstream.headers.get('content-type') ?? 'application/octet-stream',
+          ...(request.headers.origin === undefined ? {} : { 'access-control-allow-origin': request.headers.origin }),
+        })
+        const reader = upstream.body.getReader()
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          response.write(Buffer.from(value))
+        }
+        response.end()
+      } catch (error) {
+        if (!response.headersSent) {
+          sendJson(502, { ok: false, error: { code: 'upstream-failed', message: error instanceof Error ? error.message : String(error) } })
+        } else {
+          response.end()
+        }
+      }
       return
     }
     // Browser-side telemetry: the extension reports its ASR pipeline failures

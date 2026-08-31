@@ -8,6 +8,7 @@
 
 import { decodeAudioToPcm16k, fetchDashAudio } from './pre-transcribe'
 import { transcribeChunk, type WhisperModel } from './asr-whisper'
+import { loadSettings } from '../shared/settings-store'
 
 export type PreTranscribeProgress = {
   /** 0..1 across the whole pipeline (download+decode 0..0.3, ASR 0.3..1). */
@@ -55,18 +56,20 @@ export async function runPreTranscription(options: {
   onProgress({ fraction: 0.05, stage: 'downloading', message: '正在下载音频…' })
   let fileBytes: ArrayBuffer
   try {
-    const reply = await chrome.runtime.sendMessage({ type: 'MOMENTQ_PROXY_FETCH', url: dash.baseUrl }) as
-      { ok?: unknown; value?: { base64?: unknown }; error?: { message?: unknown } } | null
-    if (reply === null || reply.ok !== true || typeof reply.value?.base64 !== 'string') {
-      const detail = reply?.error && typeof reply.error.message === 'string' ? reply.error.message : '未知错误'
-      throw new Error(detail)
+    // The Bilibili CDN requires UA + bilibili.com Referer — both protected
+    // headers in every extension context. The local companion (Node) has
+    // full header control and proxies the download.
+    const settings = await loadSettings()
+    const proxyUrl = `${settings.companionBaseUrl.replace(/\/$/, '')}/proxy/audio?url=${encodeURIComponent(dash.baseUrl)}`
+    const audioResponse = await fetch(proxyUrl)
+    if (!audioResponse.ok) {
+      const detail = await audioResponse.json().catch(() => null) as { error?: { message?: unknown } } | null
+      const message = detail?.error?.message
+      throw new Error(typeof message === 'string' ? message : `HTTP ${audioResponse.status}`)
     }
-    const binary = atob(reply.value.base64)
-    fileBytes = new ArrayBuffer(binary.length)
-    const view = new Uint8Array(fileBytes)
-    for (let index = 0; index < binary.length; index += 1) view[index] = binary.charCodeAt(index)
+    fileBytes = await audioResponse.arrayBuffer()
   } catch (error) {
-    throw new Error(`音频下载失败（${dash.baseUrl.split('/')[2]}）：${error instanceof Error ? error.message : String(error)}`)
+    throw new Error(`音频下载失败（${dash.baseUrl.split('/')[2]}）：${error instanceof Error ? error.message : String(error)}。请确认已运行 scripts\start-local.cmd`)
   }
   throwIfCancelled()
 
