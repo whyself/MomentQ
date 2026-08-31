@@ -408,7 +408,7 @@ function ConversationTranscript({ entries, pending, error, onSeek }: {
               onSeek={onSeek}
             />
           ))}
-          {pending && <div className={chatCss.turnStatus} role="status" aria-live="polite">深度检索中…</div>}
+          {pending && <div className={chatCss.turnStatus} role="status" aria-live="polite">Deep diving...</div>}
           {error !== null && <div className={chatCss.openError} role="alert">{error}</div>}
         </div>
       </div>
