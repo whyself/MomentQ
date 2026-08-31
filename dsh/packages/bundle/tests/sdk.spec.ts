@@ -82,7 +82,7 @@ describe('MomentQ browser SDK', () => {
     ))
     const client = new MomentQClient({ baseUrl: 'http://127.0.0.1:3080', fetch: fetcher })
     const seen: string[] = []
-    await expect(client.streamMessage(identity, 'question', event => { seen.push(event.type) })).resolves.toEqual(result)
+    await expect(client.streamMessage(identity, 'question', [], event => { seen.push(event.type) })).resolves.toEqual(result)
     expect(seen).toEqual(frames.map(frame => frame.type))
     expect(fetcher).toHaveBeenCalledWith('http://127.0.0.1:3080/momentq/api/stream', expect.objectContaining({
       method: 'POST', body: JSON.stringify({ identity, text: 'question' }),
@@ -96,7 +96,7 @@ describe('MomentQ browser SDK', () => {
         status: 200, headers: { 'content-type': 'application/x-ndjson' },
       }),
     })
-    await expect(client.streamMessage(identity, 'question', () => undefined)).rejects.toMatchObject({
+    await expect(client.streamMessage(identity, 'question', [], () => undefined)).rejects.toMatchObject({
       name: 'MomentQClientError', code: 'internal', status: 200,
     } satisfies Partial<MomentQClientError>)
   })
