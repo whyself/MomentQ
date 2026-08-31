@@ -51,7 +51,7 @@ const MODEL_API_KEY_REF = credentialRef('DEEPSEEK_API_KEY')
 
 const requestSchema = z.object({
   method: z.enum([
-    'ensureContent', 'getContent', 'getHistory', 'submitMessage', 'syncTranscript', 'archiveSession', 'resetSession', 'deleteSession', 'deleteContent',
+    'ensureContent', 'getContent', 'getHistory', 'getTranscript', 'submitMessage', 'syncTranscript', 'archiveSession', 'resetSession', 'deleteSession', 'deleteContent',
     'clearAllSessions', 'setModelApiKey',
   ]),
   params: z.unknown(),
@@ -181,6 +181,11 @@ export function apply(ctx: Context): void {
           case 'getHistory': {
             const { identity } = identityParams.parse(request.params)
             value = await ctx.momentq.getHistory(identity)
+            break
+          }
+          case 'getTranscript': {
+            const { identity } = identityParams.parse(request.params)
+            value = await ctx.momentq.getTranscript(identity)
             break
           }
           case 'submitMessage': {

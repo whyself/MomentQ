@@ -41,6 +41,8 @@ function makeReader(socket: WebSocket): () => Promise<CompanionServerMessage> {
 async function startHarness(overrides: {
   baidu?: CompanionConfig['baidu']
   configFile?: string
+  /** Rows the mock Host returns for getTranscript (the reopen-restore seed). */
+  seedSegments?: Array<{ start: number; end: number; text: string }>
 } = {}): Promise<{
   port: number
   connect: () => Promise<{ socket: WebSocket; nextMessage: () => Promise<CompanionServerMessage> }>
@@ -76,8 +78,12 @@ async function startHarness(overrides: {
       return Response.json({ access_token: 'tk', expires_in: 3600 })
     }
     if (url.includes('/momentq/api')) {
-      hostCalls.push({ url, body: JSON.parse(String(init?.body ?? '{}')) as unknown })
-      return Response.json({ ok: true, value: { contentKey: 'k', source: 'asr', segments: 1 } })
+      const request = JSON.parse(String(init?.body ?? '{}')) as { method?: string }
+      hostCalls.push({ url, body: request })
+      const value = request.method === 'getTranscript'
+        ? { source: 'asr', segments: overrides.seedSegments ?? [] }
+        : { contentKey: 'k', source: 'asr', segments: 1 }
+      return Response.json({ ok: true, value })
     }
     throw new Error(`unexpected fetch ${url}`)
   }) as unknown as typeof fetch
@@ -174,6 +180,44 @@ describe('companion ASR server', () => {
       expect(sync).toBeDefined()
       expect((sync!.body as { params: { source: string; segments: Array<{ text: string }> } }).params.source).toBe('asr')
       expect((sync!.body as { params: { segments: Array<{ text: string }> } }).params.segments[0]?.text).toBe('完整句子')
+      socket.close()
+    } finally {
+      await harness.close()
+    }
+  })
+
+  it('seeds the previous transcript on reopen and keeps coverage unique', async () => {
+    const harness = await startHarness({
+      seedSegments: [
+        { start: 20, end: 22, text: '更早的历史句子' },
+        { start: 100, end: 101, text: '上次识别的旧结果' },
+      ],
+    })
+    try {
+      const { socket, nextMessage } = await harness.connect()
+      socket.send(JSON.stringify({ type: 'start', identity }))
+      expect(await nextMessage()).toEqual({ type: 'ready', provider: 'baidu' })
+
+      // Anchor: 1 s of audio streamed when media reads 100 s; the next
+      // finalized sentence re-covers 100–101, so it must REPLACE the seeded
+      // row for that range while the untouched 20–22 row survives.
+      socket.send(Buffer.alloc(32_000))
+      socket.send(JSON.stringify({ type: 'clock', mediaTime: 100 }))
+      socket.send(Buffer.alloc(32_000))
+      const finalPromise = nextMessage()
+      const persistedPromise = nextMessage()
+      harness.broadcastUpstream({ type: 'FIN_TEXT', err_no: 0, result: '重看区域的新识别' })
+      const final = await finalPromise
+      expect(final.type).toBe('final')
+      await persistedPromise
+
+      const sync = harness.hostCalls.filter(call => (call.body as { method?: string }).method === 'syncTranscript').at(-1)
+      expect(sync).toBeDefined()
+      const segments = (sync!.body as { params: { segments: Array<{ start: number; text: string }> } }).params.segments
+      expect(segments).toEqual([
+        { start: 20, end: 22, text: '更早的历史句子' },
+        { start: 100, end: 101, text: '重看区域的新识别' },
+      ])
       socket.close()
     } finally {
       await harness.close()

@@ -22,6 +22,7 @@ import {
   ensureState,
   MomentQStateNotFoundError,
   readState,
+  readTranscript,
   resolveSessionInstructions,
   writeState,
   replaceTranscript,
@@ -33,6 +34,13 @@ import {
 export type { ContentIdentity, ContentMetadata } from './content.ts'
 export type { MomentQState } from './state.ts'
 export type { TranscriptSegment } from './state.ts'
+
+/** Persisted transcript rows with their provenance, read back for restore. */
+export interface ConversationTranscript {
+  source: 'none' | 'bilibili' | 'asr'
+  segments: TranscriptSegment[]
+  updatedAt?: string | undefined
+}
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -292,8 +300,7 @@ export class MomentQService extends Service {
   }
 
   /** Read the committed user/assistant message history for one Session. */
-  async getHistory(identity: ContentIdentity): Promise<ConversationHistoryEntry[]> {
-    return await this.forContent(identity, async () => {
+  async getHistory(identity: ContentIdentity): Promise<ConversationHistoryEntry[]> {    return await this.forContent(identity, async () => {
       const cwd = contentDirectory(this.root, identity)
       const state = await readState(cwd)
       this.assertIdentity(identity, state)
@@ -313,6 +320,16 @@ export class MomentQService extends Service {
         }
         return []
       })
+    })
+  }
+
+  /** Read back the persisted transcript so a reopened video can restore ASR subtitles. */
+  async getTranscript(identity: ContentIdentity): Promise<ConversationTranscript> {
+    return await this.forContent(identity, async () => {
+      const cwd = contentDirectory(this.root, identity)
+      const state = await readState(cwd)
+      this.assertIdentity(identity, state)
+      return await readTranscript(cwd)
     })
   }
 

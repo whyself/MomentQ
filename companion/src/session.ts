@@ -43,6 +43,7 @@ export class AsrSession {
   private lastConnectAttemptMs = 0
   private connectBackoffMs = 0
   private hadConnectFailure = false
+  private seeded: Promise<void> | undefined
 
   constructor(
     private readonly dependencies: AsrSessionDependencies,
@@ -53,6 +54,7 @@ export class AsrSession {
   async handleClientMessage(message: CompanionClientMessage): Promise<void> {
     if (this.stopped) return
     if (message.type === 'start') {
+      await this.seedFromPersistedTranscript()
       await this.ensureStream()
       this.callbacks.send({ type: 'ready', provider: this.dependencies.provider })
       return
@@ -103,8 +105,30 @@ export class AsrSession {
     await this.persist()
   }
 
-  private async ensureStream(): Promise<void> {
-    if (this.stream !== undefined || this.stopped) return
+  /**
+   * Seed the in-memory rows from the persisted transcript so continuing a
+   * previous session APPENDS instead of replacing (the first persist would
+   * otherwise erase everything transcribed before the reopen). Only an 'asr'
+   * provenance seeds: an official Bilibili import has different content.
+   */
+  private seedFromPersistedTranscript(): Promise<void> {
+    if (this.seeded === undefined) {
+      this.seeded = (async () => {
+        try {
+          const client = new MomentQClient({ baseUrl: this.dependencies.hostBaseUrl, fetch: this.dependencies.fetcher })
+          const persisted = await client.getTranscript(this.dependencies.identity)
+          if (persisted.source !== 'asr' || this.segments.length > 0) return
+          this.segments.push(...persisted.segments)
+        } catch {
+          // Seeding is an upgrade, not a requirement: an unreachable Host
+          // leaves a fresh session that behaves exactly as before.
+        }
+      })()
+    }
+    return this.seeded
+  }
+
+  private async ensureStream(): Promise<void> {    if (this.stream !== undefined || this.stopped) return
     if (this.connecting === undefined) {
       // Exponential backoff between upstream attempts: an extended Baidu
       // outage must not turn every audio frame into a dial plus an error
@@ -208,7 +232,19 @@ export class AsrSession {
       this.stream = undefined
       void stream.finish()
     }
+    // Coverage semantics: each time range is held once, latest recognition
+    // wins. Re-watching a region (or a clock hiccup) must not stack duplicate
+    // rows on top of the seeded history.
+    const overlapping = (candidate: TranscriptSegment): boolean =>
+      candidate.start < segment.end && candidate.end > segment.start
+    for (let index = this.segments.length - 1; index >= 0; index -= 1) {
+      const candidate = this.segments[index]
+      if (candidate === undefined) continue
+      if (candidate.end <= segment.start) break
+      if (overlapping(candidate)) this.segments.splice(index, 1)
+    }
     this.segments.push(segment)
+    this.segments.sort((left, right) => left.start - right.start)
     this.callbacks.send({ type: 'final', text: segment.text, start: segment.start, end: segment.end })
     this.persist()
   }

@@ -573,7 +573,25 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
       && current.context.identity.cid === cid
       && current.subtitleSource === 'asr'
       && (current.subtitleSegments?.length ?? 0) > 0
-    if (!(segments.length === 0 && asrFinals)) {
+    // The same protection for a REOPENED video: the durable transcript is the
+    // previous session's ASR work, and the empty bilibili import would wipe
+    // it before the restore below ever runs.
+    let persistedAsrSegments: BilibiliSubtitleSegment[] | null = null
+    if (segments.length === 0) {
+      if (asrFinals) {
+        persistedAsrSegments = current?.subtitleSegments ?? null
+      } else {
+        try {
+          const persisted = await client.getTranscript(context.identity)
+          if (persisted.source === 'asr' && persisted.segments.length > 0) {
+            persistedAsrSegments = persisted.segments.slice(-5000)
+          }
+        } catch {
+          // An unreachable Host or not-yet-created content: nothing to keep.
+        }
+      }
+    }
+    if (!(segments.length === 0 && (asrFinals || persistedAsrSegments !== null))) {
       // Never erase a valid durable transcript before the replacement track has
       // been fetched and validated; a proven absence reconciles whatever is on
       // file for this identity — stale tab-state segments and a mislabelled
@@ -606,16 +624,32 @@ async function syncBilibiliSubtitle(tabId: number, context: Extract<BilibiliCont
       await writeState(tabId, probeNext)
       publishState(tabId, probeNext)
       if (state.subtitleSource === 'asr' || state.transcription !== 'inactive') return
-      if ((state.subtitleSegments?.length ?? 0) === 0) return
-      const {
-        subtitleSegments: _segments,
-        subtitleIdentity: _identity,
-        subtitleSource: _source,
-        ...withoutSubtitle
-      } = state
-      const next = { ...withoutSubtitle, transcription: 'inactive' as const }
-      await writeState(tabId, next)
-      publishState(tabId, next)
+      if ((state.subtitleSegments?.length ?? 0) > 0) {
+        const {
+          subtitleSegments: _segments,
+          subtitleIdentity: _identity,
+          subtitleSource: _source,
+          ...withoutSubtitle
+        } = state
+        const next = { ...withoutSubtitle, transcription: 'inactive' as const }
+        await writeState(tabId, next)
+        publishState(tabId, next)
+        return
+      }
+      // Reopen restore: the persisted ASR transcript is the previous
+      // transcription session's output. Surface it as this video's subtitles
+      // so reopening continues where the last session left off — and so a
+      // new transcription session appends to the same coverage.
+      if (persistedAsrSegments === null || persistedAsrSegments.length === 0) return
+      const { subtitleDiagnostic: _diagnostic, ...withoutDiagnostic } = state
+      const restored: MomentQTabState = {
+        ...withoutDiagnostic,
+        subtitleSource: 'asr',
+        subtitleSegments: persistedAsrSegments,
+        subtitleIdentity: { bvid, cid },
+      }
+      await writeState(tabId, restored)
+      publishState(tabId, restored)
     })
   })().catch((error: unknown) => {
     subtitleRetryNotBefore.delete(verifyKey)
@@ -662,23 +696,35 @@ async function syncPageSubtitleTracks(tabId: number, message: PageSubtitleTracks
     if (verifiedSubtitleIdentities.has(`${message.payload.bvid}:${message.payload.cid}`)) return
     const hasAsrFinals = state.subtitleSource === 'asr' && (state.subtitleSegments?.length ?? 0) > 0
     if (!hasAsrFinals) {
-      await client.ensureContent({ identity: context.identity, metadata: context.metadata })
-      await client.syncTranscript(context.identity, 'bilibili', [])
-      await tabOperations.run(tabId, async () => {
-        const current = await readState(tabId)
-        if (current?.context.kind !== 'vod'
-          || current.context.identity.bvid !== message.payload.bvid
-          || current.context.identity.cid !== message.payload.cid) return
-        const {
-          subtitleSegments: _segments,
-          subtitleIdentity: _identity,
-          subtitleSource: _source,
-          ...withoutSubtitle
-        } = current
-        const next = { ...withoutSubtitle, transcription: 'inactive' as const }
-        await writeState(tabId, next)
-        publishState(tabId, next)
-      })
+      // A persisted ASR transcript is durable provenance too: the page-world
+      // rotation report must not erase it (the authoritative probe owns that
+      // decision and restores it instead).
+      let persistedAsr = false
+      try {
+        const persisted = await client.getTranscript(context.identity)
+        persistedAsr = persisted.source === 'asr' && persisted.segments.length > 0
+      } catch {
+        // Host unreachable: keep the legacy reconcile behavior.
+      }
+      if (!persistedAsr) {
+        await client.ensureContent({ identity: context.identity, metadata: context.metadata })
+        await client.syncTranscript(context.identity, 'bilibili', [])
+        await tabOperations.run(tabId, async () => {
+          const current = await readState(tabId)
+          if (current?.context.kind !== 'vod'
+            || current.context.identity.bvid !== message.payload.bvid
+            || current.context.identity.cid !== message.payload.cid) return
+          const {
+            subtitleSegments: _segments,
+            subtitleIdentity: _identity,
+            subtitleSource: _source,
+            ...withoutSubtitle
+          } = current
+          const next = { ...withoutSubtitle, transcription: 'inactive' as const }
+          await writeState(tabId, next)
+          publishState(tabId, next)
+        })
+      }
     }
     return
   }

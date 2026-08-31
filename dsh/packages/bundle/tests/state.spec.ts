@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { ensureState, readState, replaceTranscript, writeState } from '../src/state.ts'
+import { ensureState, readState, readTranscript, replaceTranscript, writeState } from '../src/state.ts'
 
 const roots: string[] = []
 
@@ -87,6 +87,31 @@ describe('MomentQ state persistence', () => {
       { start: 0, end: 1.25, text: '第一句' },
       { start: 1.25, end: 3, text: '第二句' },
     ])
+  })
+
+  it('merges coverage into disjoint ranges and reads the transcript back', async () => {
+    const directory = await freshDirectory()
+    await ensureState({ directory, identity, metadata, defaultInstructions: 'Default', maxInstructionsLength: 4000 })
+    const written = await replaceTranscript(directory, 'asr', [
+      { start: 60, end: 70, text: '第二段' },
+      { start: 0, end: 10, text: '第一段' },
+      { start: 8, end: 15, text: '与第一段搭接' },
+    ])
+    // Disjoint coverage — not the old min→max blob, which pretended 15–60
+    // was covered too.
+    expect(written.transcript.coveredRanges).toEqual([
+      { start: 0, end: 15 },
+      { start: 60, end: 70 },
+    ])
+    await expect(readTranscript(directory)).resolves.toEqual({
+      source: 'asr',
+      segments: [
+        { start: 60, end: 70, text: '第二段' },
+        { start: 0, end: 10, text: '第一段' },
+        { start: 8, end: 15, text: '与第一段搭接' },
+      ],
+      updatedAt: written.transcript.updatedAt,
+    })
   })
 
   it('serializes concurrent initialization into one valid state', async () => {

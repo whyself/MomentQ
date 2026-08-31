@@ -104,6 +104,21 @@ export interface TranscriptSegment {
   text: string
 }
 
+/** Merge sorted-by-build segments into disjoint covered time ranges. */
+function mergeCoveredRanges(segments: readonly TranscriptSegment[]): Array<{ start: number; end: number }> {
+  const sorted = [...segments].sort((left, right) => left.start - right.start)
+  const ranges: Array<{ start: number; end: number }> = []
+  for (const segment of sorted) {
+    const last = ranges[ranges.length - 1]
+    if (last !== undefined && segment.start <= last.end) {
+      last.end = Math.max(last.end, segment.end)
+      continue
+    }
+    ranges.push({ start: segment.start, end: segment.end })
+  }
+  return ranges
+}
+
 /** Replace the content transcript with normalized Bilibili/ASR segments. */
 export async function replaceTranscript(
   directory: string,
@@ -120,19 +135,52 @@ export async function replaceTranscript(
       .map(segment => ({ start: segment.start, end: segment.end, text: segment.text.trim() }))
     const lines = normalized.map(segment => JSON.stringify(segment)).join('\n')
     await writeFileAtomic(join(resolve(directory), 'transcript.jsonl'), lines === '' ? '' : `${lines}\n`)
-    const coveredRanges = normalized.length === 0 ? [] : [{
-      start: Math.min(...normalized.map(segment => segment.start)),
-      end: Math.max(...normalized.map(segment => segment.end)),
-    }]
     return await publishState(resolve(directory), {
       ...current,
       transcript: {
         source,
-        coveredRanges,
+        coveredRanges: mergeCoveredRanges(normalized),
         ...(normalized.length === 0 ? {} : { updatedAt: new Date().toISOString() }),
       },
     })
   })
+}
+
+/** Read back the persisted transcript rows with their provenance. */
+export async function readTranscript(directory: string): Promise<{
+  source: 'none' | 'bilibili' | 'asr'
+  segments: TranscriptSegment[]
+  updatedAt?: string | undefined
+}> {
+  const state = await readStateOrUndefined(directory)
+  if (state === undefined) throw new MomentQStateNotFoundError(`MomentQ state is missing in "${resolve(directory)}"`)
+  let text = ''
+  try {
+    text = await readFile(join(resolve(directory), 'transcript.jsonl'), 'utf8')
+  } catch {
+    return { source: 'none', segments: [] }
+  }
+  const segments: TranscriptSegment[] = []
+  for (const line of text.split('\n')) {
+    if (line.trim() === '') continue
+    try {
+      const value = JSON.parse(line) as unknown
+      if (typeof value !== 'object' || value === null) continue
+      const start = (value as { start?: unknown }).start
+      const end = (value as { end?: unknown }).end
+      const segmentText = (value as { text?: unknown }).text
+      if (typeof start !== 'number' || typeof end !== 'number' || typeof segmentText !== 'string') continue
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end < start || segmentText.trim() === '') continue
+      segments.push({ start, end, text: segmentText.trim() })
+    } catch {
+      // A torn trailing line (crash mid-write) must not void the whole file.
+    }
+  }
+  return {
+    source: state.transcript.source,
+    segments,
+    ...(state.transcript.updatedAt === undefined ? {} : { updatedAt: state.transcript.updatedAt }),
+  }
 }
 
 /** Missing state is distinct from corrupt state for API error mapping. */

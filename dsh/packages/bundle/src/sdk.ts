@@ -6,6 +6,7 @@ import type {
   SessionMutationResult,
   SubmitMessageResult,
   ConversationHistoryEntry,
+  ConversationTranscript,
   MessageStreamEvent,
   SyncTranscriptResult,
   TranscriptSegment,
@@ -19,6 +20,7 @@ export type {
   SessionMutationResult,
   SubmitMessageResult,
   ConversationHistoryEntry,
+  ConversationTranscript,
   MessageStreamEvent,
   SyncTranscriptResult,
   TranscriptSegment,
@@ -82,6 +84,11 @@ export class MomentQClient {
 
   async getHistory(identity: ContentIdentity, signal?: AbortSignal): Promise<ConversationHistoryEntry[]> {
     return await this.call('getHistory', { identity }, signal)
+  }
+
+  /** Read back the persisted transcript (restore path for reopened videos). */
+  async getTranscript(identity: ContentIdentity, signal?: AbortSignal): Promise<ConversationTranscript> {
+    return await this.call('getTranscript', { identity }, signal)
   }
 
   async submitMessage(
