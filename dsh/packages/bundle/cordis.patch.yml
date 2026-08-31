@@ -41,10 +41,18 @@
         includeUserRoot: false
 
 # There are no mutating model tools, and no wider permission target is exposed.
+# The tool registry itself is restricted to two exact-file READ wrappers over
+# the session's own transcript (tool-policy), so the agent has no mutation
+# surface regardless of the OS sandbox. On Windows the read-only sandbox
+# spawns children under a CreateRestrictedToken, and the packaged ripgrep
+# dies under that token with STATUS_DLL_INIT_FAILED (0xC0000142, measured
+# 2026-08-31) — which broke the only tools the agent has. POSIX sandboxes
+# confine spawns without this failure, so they stay.
 - id: permission
   config:
     presets:
       read-only:
-        sandbox: read-only
+        sandbox: !!js |
+          process.platform === 'win32' ? 'danger-full-access' : 'read-only'
         approval: ask
     defaultPreset: read-only

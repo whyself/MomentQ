@@ -1,6 +1,5 @@
 /** Agent-scoped exact-file wrappers over DSH's native grep and read tools. */
 
-import { readFile } from 'node:fs/promises'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-fs'
@@ -11,8 +10,6 @@ export const name = 'momentq-transcript-tool-policy'
 export const inject = ['tools', 'systemPrompt', 'fs']
 
 const ALLOWED_TOOLS = ['grep', 'read'] as const
-/** Hard cap on JS grep matches; the native renderer caps the display anyway. */
-const MAX_MATCHES = 5_000
 
 function requiredTool(ctx: Context, toolName: typeof ALLOWED_TOOLS[number]): ToolDefinition {
   const definition = ctx.tools.get(toolName)
@@ -72,23 +69,15 @@ function shadow(
   original: ToolDefinition,
   description: string,
   parameters: Record<string, unknown>,
-  run: {
-    resolveArgs: (args: unknown, exec: ToolRunContext) => Promise<Record<string, unknown>>
-    /** Full execute replacement; defaults to original.execute(resolvedArgs). */
-    execute?: (args: Record<string, unknown>, transcript: string) => Promise<unknown>
-  },
+  resolveArgs: (args: unknown, exec: ToolRunContext) => Promise<Record<string, unknown>>,
 ): void {
   ctx.tools.register({
     ...original,
     description,
     parameters,
     async execute(args, exec) {
-      const transcript = await transcriptPath(ctx, exec)
       assertAbsent(args, ['path', 'file_path'])
-      if (run.execute !== undefined) {
-        return await run.execute({ ...(args as Record<string, unknown>) }, transcript)
-      }
-      return await original.execute(await run.resolveArgs(args, exec), exec)
+      return await original.execute(await resolveArgs(args, exec), exec)
     },
     ...(original.output === undefined ? {} : {
       output: {
@@ -115,39 +104,14 @@ export function apply(ctx: Context): void {
     read,
     'Read a line window from the current video or live transcript. The transcript file cannot be changed.',
     withoutParameter(read.parameters, ['file_path']),
-    { resolveArgs: async (args, exec) => ({ ...(args as Record<string, unknown>), file_path: await transcriptPath(ctx, exec) }) },
+    async (args, exec) => ({ ...(args as Record<string, unknown>), file_path: await transcriptPath(ctx, exec) }),
   )
   shadow(
     ctx,
     grep,
     'Search the current video or live transcript with a regular expression. Returns matching lines with line numbers. The transcript file cannot be changed.',
     withoutParameter(grep.parameters, ['path', 'include']),
-    {
-      // The native grep spawns the packaged ripgrep binary through the host's
-      // sandboxed subprocess seam, which fails on this Windows setup
-      // (exit 0xC0000142). The transcript is one small file: a plain JS scan
-      // is equivalent and cannot fail to spawn.
-      execute: async (args, transcript) => {
-        const pattern = typeof args.pattern === 'string' ? args.pattern : ''
-        let regex: RegExp
-        try {
-          regex = new RegExp(pattern)
-        } catch (error) {
-          throw new Error(`invalid pattern: ${error instanceof Error ? error.message : String(error)}`)
-        }
-        const text = await readFile(transcript, 'utf8')
-        const matches: Array<{ path: string; lineNumber: number; line: string }> = []
-        for (const [index, raw] of text.split('\n').entries()) {
-          const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw
-          if (regex.test(line)) {
-            matches.push({ path: 'transcript.jsonl', lineNumber: index + 1, line })
-            if (matches.length >= MAX_MATCHES) break
-          }
-        }
-        return { matches }
-      },
-      resolveArgs: async (args, exec) => ({ ...(args as Record<string, unknown>), path: await transcriptPath(ctx, exec) }),
-    },
+    async (args, exec) => ({ ...(args as Record<string, unknown>), path: await transcriptPath(ctx, exec) }),
   )
 
   for (const [toolName, order] of [
