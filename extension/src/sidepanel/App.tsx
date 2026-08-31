@@ -67,7 +67,12 @@ export function App({ subscribe }: {
     let disposed = false
     let timer: number | undefined
     const poll = async () => {
-      const value = await chrome.runtime.sendMessage({ type: 'MOMENTQ_GET_CURRENT_VIDEO_TIME' }).catch(() => null)
+      // Name the tab explicitly: falling back to the last-focused window let
+      // a dual-window setup read the OTHER window's video clock.
+      const value = await chrome.runtime.sendMessage({
+        type: 'MOMENTQ_GET_CURRENT_VIDEO_TIME',
+        tabId: state.tabId,
+      }).catch(() => null)
       if (!disposed && typeof value === 'number' && Number.isFinite(value)) {
         setPlaybackClock({ key, seconds: value })
         sessionClock(value)
@@ -141,14 +146,21 @@ export function App({ subscribe }: {
       identity: state.context.identity,
       metadata: state.context.metadata,
     })
-    const liveTime = await chrome.runtime.sendMessage({ type: 'MOMENTQ_GET_CURRENT_VIDEO_TIME' }).catch(() => null)
+    const liveTime = await chrome.runtime.sendMessage({
+      type: 'MOMENTQ_GET_CURRENT_VIDEO_TIME',
+      tabId: state.tabId,
+    }).catch(() => null)
     const stamp = playbackStamp(typeof liveTime === 'number' ? liveTime : playbackTime)
     const contextualText = stamp === null ? text : `${text}\n\n[当前视频播放时间：${stamp}]`
     return await client.streamMessage(state.context.identity, contextualText, onEvent, signal)
   }
 
   async function captureCurrentFrame(): Promise<string | null> {
-    return await chrome.runtime.sendMessage({ type: 'MOMENTQ_CAPTURE_CURRENT_FRAME' }) as string | null
+    const current = stateRef.current
+    return await sendWithRetry({
+      type: 'MOMENTQ_CAPTURE_CURRENT_FRAME',
+      ...(current === null ? {} : { tabId: current.tabId }),
+    }) as string | null
   }
 
   // Answer timestamps seek the video directly: the panel talks to the content
@@ -173,24 +185,31 @@ export function App({ subscribe }: {
     await client.deleteSession(current.context.identity)
   }, [state, settings])
 
+  // One toggle at a time: a double-click must not ride two background
+  // toggles and land on the opposite of what the user wanted.
+  const toggleInFlight = useRef(false)
   function toggleTranscription(): void {
     if (state === null) return
+    if (toggleInFlight.current) return
+    toggleInFlight.current = true
     void (async () => {
-      setTranscriptionNotice(null)
-      // Every start funnels through the background so state flips exactly
-      // once; the background then requests the capture here, where the id is
-      // both minted and consumed.
-      const bounded = (promise: Promise<unknown>): Promise<unknown> => Promise.race([
-        promise,
-        new Promise((_, reject) => setTimeout(() => reject(new Error('面板等待后台响应超时')), 15_000)),
-      ])
       try {
+        setTranscriptionNotice(null)
+        // Every start funnels through the background so state flips exactly
+        // once; the background then requests the capture here, where the id is
+        // both minted and consumed.
+        const bounded = (promise: Promise<unknown>): Promise<unknown> => Promise.race([
+          promise,
+          new Promise((_, reject) => setTimeout(() => reject(new Error('面板等待后台响应超时')), 15_000)),
+        ])
         await bounded(sendWithRetry({
           type: 'MOMENTQ_TOGGLE_TRANSCRIPTION',
           tabId: state.tabId,
         }))
       } catch (error) {
         setTranscriptionNotice(`转录操作失败：${error instanceof Error ? error.message : String(error)}`)
+      } finally {
+        toggleInFlight.current = false
       }
     })()
   }
@@ -236,28 +255,33 @@ export function App({ subscribe }: {
         await stopPanelSession()
       }
     }
-    const listener = (message: unknown): false => {
+    const listener = (message: unknown, _sender: unknown, sendResponse: (response: unknown) => void): boolean => {
       if (typeof message !== 'object' || message === null) return false
       const record = message as { type?: unknown; tabId?: unknown }
       if (record.type === 'MOMENTQ_ASR_REQUEST_START') {
         if (typeof record.tabId === 'number') void beginPanelCapture(record.tabId)
         return false
       }
+      // Pause/resume/stop name their target tab: with several windows each
+      // running a panel, a global broadcast would act on the wrong session.
+      const targetsUs = typeof record.tabId !== 'number' || record.tabId === panelSessionTabId()
       if (record.type === 'MOMENTQ_ASR_PAUSE') {
-        pausePanelSession(true)
+        if (targetsUs) pausePanelSession(true)
         return false
       }
       if (record.type === 'MOMENTQ_ASR_RESUME') {
-        pausePanelSession(false)
+        if (targetsUs) pausePanelSession(false)
         return false
       }
       if (record.type === 'MOMENTQ_ASR_STOP') {
-        void stopPanelSession()
+        if (targetsUs) void stopPanelSession()
         return false
       }
       if (record.type === 'MOMENTQ_ASR_QUERY') {
+        // Inline answer: the ack watchdog and SW-restart recovery both depend
+        // on this reply arriving as a response, not as a side broadcast.
         try {
-          chrome.runtime.sendMessage({ type: 'MOMENTQ_ASR_SESSION', tabId: panelSessionTabId() }).catch(() => {})
+          sendResponse({ type: 'MOMENTQ_ASR_SESSION', tabId: panelSessionTabId() })
         } catch { /* dead context */ }
         return false
       }

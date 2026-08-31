@@ -262,8 +262,13 @@ async function publishSubtitle(snapshot: BilibiliPageSnapshot): Promise<void> {
         if (officialTracks.length > 0) {
           postSubtitleTracks(snapshot, officialTracks, 'probe')
         } else if (index.tracks.length > 0) {
-          // AI-only via the unsigned channel: nothing trusted to import; keep
-          // the request key unset so later player observations can still post.
+          // AI-only via the unsigned channel: nothing trusted to import, but
+          // the identity IS handled — leaving the key unset made every DOM
+          // mutation re-probe the credentialed WBI endpoint (a request storm
+          // on exactly the foreign-language videos that are AI-only). The
+          // player tap still posts signed tracks, and the background keeps
+          // its own throttled re-probe for lazily generated tracks.
+          subtitleRequestKey = key
         } else if (index.definitiveEmpty) {
           postSubtitleTracks(snapshot, [], 'probe', 'absent')
         }

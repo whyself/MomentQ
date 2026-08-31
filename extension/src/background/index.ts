@@ -656,6 +656,10 @@ async function syncPageSubtitleTracks(tabId: number, message: PageSubtitleTracks
   const settings = await loadSettings()
   const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
   if (message.payload.status === 'absent') {
+    // The background's authoritative probe already verified a real track for
+    // this identity: a page-world "absent" (Bilibili's track list rotates)
+    // must not erase a verified import past its final state.
+    if (verifiedSubtitleIdentities.has(`${message.payload.bvid}:${message.payload.cid}`)) return
     const hasAsrFinals = state.subtitleSource === 'asr' && (state.subtitleSegments?.length ?? 0) > 0
     if (!hasAsrFinals) {
       await client.ensureContent({ identity: context.identity, metadata: context.metadata })

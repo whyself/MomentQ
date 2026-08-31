@@ -4,11 +4,14 @@ import { pageSnapshotToRuntimeMessage } from './relay'
 import { mountTranscriptionControl } from './transcription-control'
 
 // The background re-injects this file into tabs that predate an extension
-// reload. Within one extension instance the isolated world persists, so this
-// flag keeps a re-injection from registering every listener twice.
-const bridge = globalThis as { __momentqContentBridge?: boolean }
-if (bridge.__momentqContentBridge !== true) {
-  bridge.__momentqContentBridge = true
+// reload. Within one extension instance the isolated world persists, so a
+// plain boolean would make the NEW build's injection a no-op behind the OLD
+// build's flag (the re-injection exists precisely to revive orphaned tabs
+// after an update) — key the guard on the running version instead.
+const bridge = globalThis as { __momentqContentBridgeVersion?: string }
+const bridgeVersion = `v${chrome.runtime.getManifest().version}`
+if (bridge.__momentqContentBridgeVersion !== bridgeVersion) {
+  bridge.__momentqContentBridgeVersion = bridgeVersion
 
   function currentVideo(): HTMLVideoElement | null {
     const candidates = [...document.querySelectorAll('video')]

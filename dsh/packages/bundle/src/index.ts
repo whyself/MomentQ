@@ -506,8 +506,15 @@ export class MomentQService extends Service {
     for (const entry of entries) {
       if (!entry.isDirectory()) continue
       const cwd = resolve(this.contentRoot, entry.name)
+      let state: MomentQState
       try {
-        const state = await readState(cwd)
+        state = await readState(cwd)
+      } catch (error) {
+        // Nesting/auxiliary directories without content state are not errors.
+        if (error instanceof MomentQStateNotFoundError) continue
+        throw error
+      }
+      try {
         const removed = await this.forContent(state.identity, async () => {
           const current = await readState(cwd)
           const records: MomentQSessionRecord[] = [
