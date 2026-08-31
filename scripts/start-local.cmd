@@ -10,7 +10,7 @@ set "ROOT=%~dp0.."
 set "MOMENTQ_DATA_ROOT=%LOCALAPPDATA%\MomentQ"
 set "DSH_HOME=%MOMENTQ_DATA_ROOT%\dsh-home"
 
-rem ── [0] Node.js ──────────────────────────────────────────────
+rem --- [0] Node.js -----------------------------------------------------------
 where node >nul 2>nul
 if errorlevel 1 (
   echo [ERROR] Node.js not found. Install Node.js 22 LTS or newer: https://nodejs.org/
@@ -24,11 +24,11 @@ if !NODE_MAJOR! LSS 22 (
   exit /b 1
 )
 
-rem ── [1] Data directories ─────────────────────────────────────
+rem --- [1] Data directories --------------------------------------------------
 if not exist "%MOMENTQ_DATA_ROOT%" mkdir "%MOMENTQ_DATA_ROOT%"
 if not exist "%DSH_HOME%" mkdir "%DSH_HOME%"
 
-rem ── [2] pnpm (required by the dsh plugin manager) ────────────
+rem --- [2] pnpm (required by the dsh plugin manager) --------------------------
 where pnpm >nul 2>nul
 if errorlevel 1 (
   echo [SETUP] Installing pnpm ...
@@ -40,10 +40,10 @@ if errorlevel 1 (
   )
 )
 
-rem ── [3] DSH runtime (version pinned for bundle compatibility) ─
+rem --- [3] DSH runtime (version pinned for bundle compatibility) --------------
 where dsh >nul 2>nul
 if errorlevel 1 (
-  echo [SETUP] Installing the DSH runtime (about a minute) ...
+  echo [SETUP] Installing the DSH runtime, about a minute ...
   call npm i -g @deepseek-ai/dsh@0.1.1-rc.2 --silent
   if errorlevel 1 (
     echo [ERROR] Failed to install the DSH runtime. Run manually: npm i -g @deepseek-ai/dsh@0.1.1-rc.2
@@ -52,36 +52,38 @@ if errorlevel 1 (
   )
 )
 
-rem ── [4] MomentQ Host bundle (idempotent) ─────────────────────
+rem --- [4] MomentQ Host bundle (idempotent) -----------------------------------
+rem The install call sits outside parentheses on purpose: cmd mangles quoted
+rem delayed-expansion vars inside nested blocks.
 set "BUNDLE_TGZ="
 for %%f in ("%ROOT%\bundles\momentq-dsh-bundle-*.tgz") do set "BUNDLE_TGZ=%%~ff"
 for %%f in ("%ROOT%\dsh\packages\bundle\momentq-dsh-bundle-*.tgz") do if not defined BUNDLE_TGZ set "BUNDLE_TGZ=%%~ff"
-if not exist "%DSH_HOME%\profiles\web\node_modules\momentq-dsh-bundle\package.json" (
-  if defined BUNDLE_TGZ (
-    echo [SETUP] Installing the MomentQ Host bundle ...
-    call dsh plugin --profile web add "!BUNDLE_TGZ!"
-    if errorlevel 1 (
-      echo [ERROR] Failed to install the MomentQ Host bundle.
-      pause
-      exit /b 1
-    )
-  ) else (
-    echo [WARN] momentq-dsh-bundle package not found ^(bundles\*.tgz^). The Host will not serve MomentQ APIs.
-  )
+if exist "%DSH_HOME%\profiles\web\node_modules\momentq-dsh-bundle\package.json" goto bundle-ready
+if not defined BUNDLE_TGZ goto bundle-missing
+echo [SETUP] Installing the MomentQ Host bundle ...
+call dsh plugin --profile web add "%BUNDLE_TGZ%"
+if errorlevel 1 (
+  echo [ERROR] Failed to install the MomentQ Host bundle.
+  pause
+  exit /b 1
 )
+goto bundle-ready
+:bundle-missing
+echo [WARN] momentq-dsh-bundle package not found in bundles or dsh trees. The Host will not serve MomentQ APIs.
+:bundle-ready
 
-rem ── [5] companion readiness (optional component) ─────────────
+rem --- [5] companion readiness (optional component) ---------------------------
 set "COMPANION_OK=1"
 if not exist "%ROOT%\companion\dist\index.js" set "COMPANION_OK=0"
 if not exist "%ROOT%\companion\node_modules\ws" set "COMPANION_OK=0"
 
-rem ── [6] Port occupancy ───────────────────────────────────────
+rem --- [6] Port occupancy ------------------------------------------------------
 set "HOST_RUNNING=0"
 set "COMPANION_RUNNING=0"
 netstat -ano | findstr /c(":3182") | findstr /c("LISTENING") >nul && set "HOST_RUNNING=1"
 netstat -ano | findstr /c(":3090") | findstr /c("LISTENING") >nul && set "COMPANION_RUNNING=1"
 
-rem ── [7] Launch ───────────────────────────────────────────────
+rem --- [7] Launch --------------------------------------------------------------
 if "%HOST_RUNNING%"=="1" (
   echo [SKIP] DSH Host is already running on port 3182.
 ) else (
@@ -100,7 +102,7 @@ if "%COMPANION_OK%"=="0" (
 
 echo.
 echo All set. Next steps:
-echo   1. Open edge://extensions in Edge, enable Developer mode, click "Load unpacked" and select the extension\dist folder.
+echo   1. Open edge://extensions in Edge, enable Developer mode, click Load unpacked and select the extension\dist folder.
 echo   2. Open any Bilibili video and click the MomentQ toolbar icon to open the side panel.
 echo   3. Enter your model API key in Settings. Speech recognition defaults to the local Whisper engine; the first run downloads the model.
 echo Close the two service windows to stop the services.
