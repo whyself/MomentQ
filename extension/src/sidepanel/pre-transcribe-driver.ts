@@ -44,11 +44,21 @@ export async function runPreTranscription(options: {
   }
 
   onProgress({ fraction: 0.02, stage: 'downloading', message: '正在获取音频地址…' })
-  const dash = await fetchDashAudio(bvid, cid)
+  let dash: Awaited<ReturnType<typeof fetchDashAudio>>
+  try {
+    dash = await fetchDashAudio(bvid, cid)
+  } catch (error) {
+    throw new Error(`获取音频地址：${error instanceof Error ? error.message : String(error)}`)
+  }
   throwIfCancelled()
 
   onProgress({ fraction: 0.05, stage: 'downloading', message: '正在下载音频…' })
-  const audioResponse = await fetch(dash.baseUrl, { credentials: 'include' })
+  let audioResponse: Response
+  try {
+    audioResponse = await fetch(dash.baseUrl)
+  } catch (error) {
+    throw new Error(`音频下载连接失败（${dash.baseUrl.split('/')[2]}）：${error instanceof Error ? error.message : String(error)}`)
+  }
   if (!audioResponse.ok) throw new Error(`音频下载失败 HTTP ${audioResponse.status}`)
   const fileBytes = await audioResponse.arrayBuffer()
   throwIfCancelled()
