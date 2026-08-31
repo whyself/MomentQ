@@ -122,11 +122,35 @@ export async function decodeAudioToPcm16k(
   let durationUs = 0
   for (const audio of decodedAudio) {
     const frames = audio.numberOfFrames
-    const target = new Float32Array(frames)
-    // Channel 0 only: mono downmix is unnecessary for ASR.
+    // copyTo sizes the destination in BYTES for f32 (4 per frame) and the
+    // allocation must account for the source's channel count — allocating
+    // frames*4 for a stereo source still fails because both PLANES count.
+    // Allocate from the format's own frame size and read plane 0 only.
+    const sourceFormat = audio.format ?? 'f32-planar'
+    const bytesPerSample = sourceFormat.startsWith('f32') ? 4 : 2
+    const channels = Math.max(1, audio.numberOfChannels)
+    // Planar layouts store one full plane per channel; interleaved (u16/f32)
+    // stores frames * channels in the single plane.
+    const planeFloats = sourceFormat.includes('planar')
+      ? frames
+      : frames * channels
+    const target = new Float32Array(planeFloats)
     audio.copyTo(target, { planeIndex: 0, format: 'f32' })
+    // Downmix to mono by averaging planes when the source is multi-channel;
+    // ASR does not need stereo.
+    let mono = target
+    if (channels > 1 && sourceFormat.includes('planar')) {
+      mono = new Float32Array(frames)
+      for (let channel = 0; channel < channels; channel += 1) {
+        const plane = new Float32Array(planeFloats)
+        audio.copyTo(plane, { planeIndex: channel, format: 'f32' })
+        for (let frame = 0; frame < planeFloats; frame += 1) {
+          mono[frame] = (mono[frame] ?? 0) + (plane[frame] ?? 0) / channels
+        }
+      }
+    }
     audio.close()
-    chunks.push(resample(target, extraction.sampleRate || dash.sampleRate, 16_000))
+    chunks.push(resample(mono, extraction.sampleRate || dash.sampleRate, 16_000))
     total += frames
     durationUs += audio.duration ?? 0
     onProgress(durationUs / 1_000_000)
