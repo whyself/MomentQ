@@ -1216,7 +1216,10 @@ chrome.commands.onCommand.addListener((command) => {
   void chrome.tabs.query({ active: true, lastFocusedWindow: true }).then(([tab]) => {
     const tabId = tab?.id
     if (tabId === undefined) return
-    return chrome.sidePanel.open({ tabId })
+    // Edge only honors sidePanel.open() inside a short gesture window; the
+    // async tabs.query can fall outside it, and the rejection would surface
+    // as an unhandled promise. The toolbar click still opens the panel.
+    return chrome.sidePanel.open({ tabId }).catch(() => {})
   })
 })
 
