@@ -309,7 +309,13 @@ async function beginTranscription(
     // hanging the click.)
     const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
     await client.ensureContent({ identity: initial.context.identity, metadata: initial.context.metadata })
-    return await tabOperations.run(tabId, 'beginTranscription', async () => {
+    // NOTE: no tabOperations.run() here. When entered from the panel toggle,
+    // the toggle queue entry is already held and nesting would deadlock
+    // against itself (the reported 'toggleTranscriptionUnlocked 已 10.1s').
+    // Callers that need queueing (MOMENTQ_ASR_START_FROM_PANEL) wrap it in
+    // their own tabOperations.run below. Storage reads/writes inside are
+    // naturally serialized because every entry point goes through the queue.
+    {
       const current = await readState(tabId)
       if (current === null || current.transcription !== 'inactive') return await readState(tabId)
       const { transcriptPreview: _preview, transcriptionError: _error, ...withoutAsrUi } = current
@@ -349,7 +355,7 @@ async function beginTranscription(
       }
       armStartAckWatchdog(tabId)
       return await readState(tabId)
-    })
+    }
   }
   try {
     return await Promise.race([
@@ -991,7 +997,10 @@ async function handleRequest(
 
   if (type === 'MOMENTQ_ASR_START_FROM_PANEL') {
     const request = message as AsrStartFromPanelMessage
-    return await beginTranscription(request.tabId, request.streamId)
+    // This message arrives from a panel click without any queue held, so it
+    // supplies the serialization beginTranscription deliberately lacks.
+    return await tabOperations.run(request.tabId, 'beginTranscription',
+      () => beginTranscription(request.tabId, request.streamId))
   }
 
   if (type === 'MOMENTQ_ASR_EVENT') {
