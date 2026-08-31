@@ -49,8 +49,10 @@ describe('panel-open bridge recovery', () => {
 
   it('guards the content entry against double registration on re-injection', async () => {
     const source = await readFile(join(import.meta.dirname, '..', 'src', 'content', 'index.tsx'), 'utf8')
-    expect(source).toContain('__momentqContentBridge')
-    expect(source).toContain('if (bridge.__momentqContentBridge !== true)')
+    // The guard is keyed on the running version: a plain boolean let the NEW
+    // build's revival injection become a no-op behind the OLD build's flag.
+    expect(source).toContain('__momentqContentBridgeVersion')
+    expect(source).toContain('if (bridge.__momentqContentBridgeVersion !== bridgeVersion)')
   })
 
   it('re-checks a trackless video the moment the panel asks for state', async () => {

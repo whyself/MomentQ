@@ -138,32 +138,47 @@ export async function startCompanionServer(
         return
       }
       if (request.method === 'POST') {
+        if ((request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() ?? '') !== 'application/json') {
+          sendJson(415, { ok: false, error: { code: 'invalid-request', message: 'JSON required' } })
+          return
+        }
+        let input: ReturnType<typeof credentialInput>
         try {
-          if ((request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() ?? '') !== 'application/json') {
-            sendJson(415, { ok: false, error: { code: 'invalid-request', message: 'JSON required' } })
-            return
-          }
-          const input = credentialInput(await readJsonBody(request, MAX_CONFIG_BODY_BYTES))
-          if (input === null) {
-            sendJson(400, { ok: false, error: { code: 'invalid-request', message: 'appId / apiKey / secretKey 都是必填的字符串' } })
-            return
-          }
-          config.baidu = {
-            appId: input.appId,
-            apiKey: input.apiKey,
-            secretKey: input.secretKey,
-            devPid: input.devPid ?? config.baidu.devPid,
-          }
+          input = credentialInput(await readJsonBody(request, MAX_CONFIG_BODY_BYTES))
+        } catch {
+          sendJson(400, { ok: false, error: { code: 'invalid-request', message: 'MomentQ companion received an invalid config body' } })
+          return
+        }
+        if (input === null) {
+          sendJson(400, { ok: false, error: { code: 'invalid-request', message: 'appId / apiKey / secretKey 都是必填的字符串' } })
+          return
+        }
+        // The upstream casts appId to a number for the START frame; a
+        // non-numeric value would surface as a cryptic Baidu error later.
+        if (!/^\d+$/.test(input.appId)) {
+          sendJson(400, { ok: false, error: { code: 'invalid-request', message: 'App ID 必须是纯数字' } })
+          return
+        }
+        config.baidu = {
+          appId: input.appId,
+          apiKey: input.apiKey,
+          secretKey: input.secretKey,
+          devPid: input.devPid ?? config.baidu.devPid,
+        }
+        try {
           await saveStoredBaiduCredentials(options.configFilePath ?? configFilePath(), {
             appId: config.baidu.appId!,
             apiKey: config.baidu.apiKey!,
             secretKey: config.baidu.secretKey!,
             devPid: config.baidu.devPid,
           })
-          sendJson(200, { ok: true, value: { saved: true } })
-        } catch {
-          sendJson(400, { ok: false, error: { code: 'invalid-request', message: 'MomentQ companion received an invalid config body' } })
+        } catch (error) {
+          // A disk failure must not masquerade as a user input error.
+          console.error(`[momentq-companion] ${new Date().toISOString().slice(11, 23)} 凭据写入失败：`, error instanceof Error ? error.message : String(error))
+          sendJson(500, { ok: false, error: { code: 'storage-failed', message: '凭据无法写入本机磁盘：请检查文件权限与剩余空间' } })
+          return
         }
+        sendJson(200, { ok: true, value: { saved: true } })
         return
       }
       sendJson(405, { ok: false, error: { code: 'invalid-request', message: 'GET or POST required' } })
@@ -173,13 +188,20 @@ export async function startCompanionServer(
     // here so local logs carry the exact in-browser error text.
     if (path === '/log' || path === '/log/') {
       if (request.method === 'POST') {
+        // Cross-site fetch with a JSON content-type would trigger CORS
+        // preflight (which we reject); only same-origin-style simple
+        // requests skip it, so the content-type must be pinned here too.
+        if ((request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() ?? '') !== 'application/json') {
+          sendJson(415, { ok: false, error: { code: 'invalid-request', message: 'JSON required' } })
+          return
+        }
         try {
           const parsed: unknown = await readJsonBody(request, MAX_CONFIG_BODY_BYTES)
           const message = typeof parsed === 'object' && parsed !== null
             && typeof (parsed as { message?: unknown }).message === 'string'
             ? (parsed as { message: string }).message.slice(0, 2_000)
             : ''
-          if (message !== '') log(`[extension] ${message.replaceAll('\n', ' | ')}`)
+          if (message !== '') log(`[extension] ${message.replace(/[\r\n]+/g, ' | ')}`)
           sendJson(200, { ok: true, value: { logged: true } })
         } catch {
           sendJson(400, { ok: false, error: { code: 'invalid-request', message: 'invalid log body' } })
@@ -191,7 +213,28 @@ export async function startCompanionServer(
     }
     sendJson(404, { ok: false, error: { code: 'not-found', message: 'unknown MomentQ companion endpoint' } })
   })
-  const webSocketServer = new WebSocketServer({ server, maxPayload: MAX_FRAME_BYTES })
+  // WebSocket upgrades are gated on Origin: browsers do NOT apply CORS to
+  // WebSocket dialing, so without this every web page the user visits could
+  // open ws://127.0.0.1:3090 and burn the user's paid Baidu quota (a valid
+  // `start` + arbitrary audio is all it takes). Only extension pages pass.
+  const webSocketServer = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES })
+  server.on('upgrade', (request, socket, head) => {
+    let allowed = false
+    try {
+      const parsed = new URL(request.headers.origin ?? '')
+      allowed = parsed.protocol === 'chrome-extension:' || parsed.protocol === 'moz-extension:'
+    } catch {
+      allowed = false
+    }
+    if (!allowed) {
+      socket.write('HTTP/1.1 403 Forbidden\r\nconnection: close\r\n\r\n')
+      socket.destroy()
+      return
+    }
+    webSocketServer.handleUpgrade(request, socket, head, (client) => {
+      webSocketServer.emit('connection', client, request)
+    })
+  })
 
   webSocketServer.on('connection', (socket: WebSocket) => {
     log('extension WebSocket 已连接')

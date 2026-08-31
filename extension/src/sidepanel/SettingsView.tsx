@@ -89,6 +89,9 @@ function SelectRow({ title, description, value, items, onSelect }: {
         onSelect={(id) => { onSelect(id); setOpen(false) }}
         onClose={() => { setOpen(false) }}
         align="end"
+        // The settings dialog clips in-place lists at its edge; portal mode
+        // renders from the anchor rect in document.body instead.
+        portal
         anchor={(
           <button type="button" className={rowCss.selector} onClick={() => { setOpen(value => !value) }}>
             {label === undefined || 'type' in label ? value : label.label}
@@ -204,16 +207,23 @@ function AsrSection({ draft, setDraft, saving, saveError, onSave }: {
   useEffect(() => {
     let active = true
     setCredentialErrorText(null)
-    fetchCompanionConfig(draft.companionBaseUrl).then(view => {
-      if (!active) return
-      setCredentialView(view)
-      setAppId(current => current === '' ? view.baidu.appId ?? '' : current)
-    }).catch((error: unknown) => {
-      if (!active) return
-      setCredentialView(null)
-      setCredentialErrorText(error instanceof Error ? error.message : '无法读取本地 companion 配置')
-    })
-    return () => { active = false }
+    // Debounce: this effect keys on the address field, so every keystroke
+    // used to fire a live /config request while the user was still typing.
+    const timer = window.setTimeout(() => {
+      fetchCompanionConfig(draft.companionBaseUrl).then(view => {
+        if (!active) return
+        setCredentialView(view)
+        setAppId(current => current === '' ? view.baidu.appId ?? '' : current)
+      }).catch((error: unknown) => {
+        if (!active) return
+        setCredentialView(null)
+        setCredentialErrorText(error instanceof Error ? error.message : '无法读取本地 companion 配置')
+      })
+    }, 500)
+    return () => {
+      active = false
+      window.clearTimeout(timer)
+    }
   }, [draft.companionBaseUrl])
 
   // Saved secrets display as password dots whose count matches the stored
@@ -271,7 +281,7 @@ function AsrSection({ draft, setDraft, saving, saveError, onSave }: {
       </Row>
       <SelectRow
         title="ASR 服务商"
-        description="云端或本地模型均按服务商接入 companion，可插拔替换。"
+        description="百度云：音频实时上传百度智能云识别（凭据仅存本机）。本地 Whisper：完全本机推理，首次需从 HuggingFace 下载 0.26–1.6GB 模型权重。"
         value={draft.asrProvider}
         items={ASR_PROVIDERS.map(({ id, label }) => ({ id, label }))}
         onSelect={id => { setDraft({ ...draft, asrProvider: id as AsrProviderId }) }}
@@ -317,20 +327,6 @@ function AsrSection({ draft, setDraft, saving, saveError, onSave }: {
           onChange={event => { setSecretKey(event.target.value.replaceAll('•', '')) }}
         />
       </Row>
-      <SelectRow
-        title="字幕写入方式"
-        description="控制识别结果追加或替换当前临时字幕。"
-        value={draft.subtitleMode}
-        items={[{ id: 'append', label: '追加' }, { id: 'replace', label: '替换' }]}
-        onSelect={id => { setDraft({ ...draft, subtitleMode: id === 'replace' ? 'replace' : 'append' }) }}
-      />
-      <SelectRow
-        title="自动连接"
-        description="打开支持页面后是否自动连接本地 companion。"
-        value={draft.autoConnect ? 'on' : 'off'}
-        items={[{ id: 'on', label: '开启' }, { id: 'off', label: '关闭' }]}
-        onSelect={id => { setDraft({ ...draft, autoConnect: id === 'on' }) }}
-      />
       <Row
         title="连接状态"
         description={`面板版本 v${chrome.runtime.getManifest().version}；DSH Host 与百度云凭据分别保存在上方地址与本地 companion。`}

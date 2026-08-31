@@ -97,7 +97,11 @@ async function startHarness(overrides: {
     upstreamFrames,
     hostCalls,
     connect: async () => {
-      const socket = new WebSocket(`ws://127.0.0.1:${handle.port}`)
+      // The upgrade handshake rejects non-extension origins (drive-by
+      // webpage protection), so the test client presents one.
+      const socket = new WebSocket(`ws://127.0.0.1:${handle.port}`, {
+        headers: { origin: 'chrome-extension://momentq-test' },
+      })
       await new Promise<void>((resolve, reject) => {
         socket.addEventListener('open', () => resolve(), { once: true })
         socket.addEventListener('error', () => reject(new Error('connect failed')), { once: true })
@@ -200,7 +204,7 @@ describe('companion ASR server', () => {
       const saved = await fetch(`${base}/config`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ appId: 'aid', apiKey: 'abcdefgh', secretKey: 'sk' }),
+        body: JSON.stringify({ appId: '124213197', apiKey: 'abcdefgh', secretKey: 'sk' }),
       })
       expect(saved.status).toBe(200)
       expect(await saved.json()).toEqual({ ok: true, value: { saved: true } })
@@ -213,7 +217,7 @@ describe('companion ASR server', () => {
         value: {
           provider: 'baidu',
           baidu: {
-            configured: true, appId: 'aid', apiKeyMasked: 'ab****gh', apiKeyLength: 8,
+            configured: true, appId: '124213197', apiKeyMasked: 'ab****gh', apiKeyLength: 8,
             secretKeySet: true, secretKeyLength: 2, devPid: 80001,
           },
         },
@@ -222,12 +226,12 @@ describe('companion ASR server', () => {
       const stored = JSON.parse(await readFile(configFile, 'utf8')) as {
         baidu: { appId: string; apiKey: string; secretKey: string }
       }
-      expect(stored.baidu).toEqual({ appId: 'aid', apiKey: 'abcdefgh', secretKey: 'sk', devPid: 80001 })
+      expect(stored.baidu).toEqual({ appId: '124213197', apiKey: 'abcdefgh', secretKey: 'sk', devPid: 80001 })
 
       const bad = await fetch(`${base}/config`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ appId: 'aid' }),
+        body: JSON.stringify({ appId: '124213197' }),
       })
       expect(bad.status).toBe(400)
     } finally {

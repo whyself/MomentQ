@@ -4,8 +4,8 @@
 
 ## 音频链路
 
-1. 扩展通过 `chrome.tabCapture` 抓取**当前标签页**的音频（其他标签页不会混入），在 offscreen 文档里降采样为 `16kHz / 16bit / mono PCM`，静音段（暂停、静音）直接丢弃。
-2. PCM 帧经**本机回环 WebSocket**（默认 `ws://127.0.0.1:3090`）发送到 companion；原始音频只在扩展与 companion 之间传输，不落盘、不出本机、不经过任何远端（百度只收到识别流）。
+1. 扩展通过 `chrome.tabCapture` 抓取**当前标签页**的音频（其他标签页不会混入），在面板文档里降采样为 `16kHz / 16bit / mono PCM`（暂停期间以静音帧保活连接，官方实时协议要求持续上行）。
+2. PCM 帧经**本机回环 WebSocket**（默认 `ws://127.0.0.1:3090`）发送到 companion；原始音频在扩展与 companion 之间仅经本机回环传输、不落盘；随后由 companion 实时转发至百度智能云做识别（除百度外无其他远端）。
 3. companion 维持到百度 `wss://vop.baidu.com/realtime_asr` 的一路连接：OAuth 换取 access token、START 握手、心跳忽略、句级 `final_result` 断句、接近一小时主动续接。
 4. companion 用扩展定期发来的 `clock`（媒体播放时间）把每个句子的音频相对时间锚定到媒体时间轴；拖动进度会被检测为 seek，丢弃进行中的句子并裁剪覆盖到新播放位置之后的段落。
 5. 每句最终结果即时通过 Host 的 `syncTranscript(identity, 'asr', segments)` 全量替换写入 `transcript.jsonl`，与 B 站字幕（`source='bilibili'`）同构。

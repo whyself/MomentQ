@@ -391,7 +391,7 @@ function ConversationTranscript({ entries, pending, error, onSeek }: {
               onSeek={onSeek}
             />
           ))}
-          {pending && <div className={chatCss.turnStatus} role="status" aria-live="polite">Deep diving...</div>}
+          {pending && <div className={chatCss.turnStatus} role="status" aria-live="polite">深度检索中…</div>}
           {error !== null && <div className={chatCss.openError} role="alert">{error}</div>}
         </div>
       </div>
@@ -479,7 +479,11 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
         text: item.text,
         blocks: Object.fromEntries(item.blocks.map((block, index) => [index, block])),
       })))
-    }).catch(() => {})
+    }).catch(() => {
+      // A dead DSH Host used to leave a silently empty conversation.
+      if (generation.current !== requestGeneration) return
+      setError('对话历史加载失败：请确认本地 DSH Host（127.0.0.1:3182）已启动')
+    })
   }, [contentKey, onLoadHistory])
 
   useEffect(() => () => { activeRequest.current?.abort() }, [])
@@ -510,6 +514,8 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
     void onCaptureFrame().then(dataUrl => {
       if (dataUrl !== null) setFrame({ dataUrl, name: `momentq-frame-${Date.now()}.png` })
       else setError('无法读取视频当前帧，请先播放视频并重试')
+    }).catch((reason: unknown) => {
+      setError(`读取当前帧失败：${reason instanceof Error ? reason.message : String(reason)}`)
     })
   }
 
@@ -524,6 +530,7 @@ export function ConversationView({ state, capturedFrame, playbackTime, settings,
     reader.onload = () => {
       if (typeof reader.result === 'string') setFrame({ dataUrl: reader.result, name: file.name || `momentq-image-${Date.now()}.png` })
     }
+    reader.onerror = () => setError('粘贴的图片读取失败，请重试')
     reader.readAsDataURL(file)
   }
 

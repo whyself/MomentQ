@@ -40,6 +40,9 @@ export class AsrSession {
   private sawClock = false
   private persistChain: Promise<void> = Promise.resolve()
   private stopped = false
+  private lastConnectAttemptMs = 0
+  private connectBackoffMs = 0
+  private hadConnectFailure = false
 
   constructor(
     private readonly dependencies: AsrSessionDependencies,
@@ -102,7 +105,19 @@ export class AsrSession {
 
   private async ensureStream(): Promise<void> {
     if (this.stream !== undefined || this.stopped) return
-    this.connecting ??= this.connectStream().finally(() => { this.connecting = undefined })
+    if (this.connecting === undefined) {
+      // Exponential backoff between upstream attempts: an extended Baidu
+      // outage must not turn every audio frame into a dial plus an error
+      // frame pair (log flood + UI flood).
+      const nowMs = this.dependencies.now?.() ?? Date.now()
+      const waitMs = Math.max(0, this.lastConnectAttemptMs + this.connectBackoffMs - nowMs)
+      this.lastConnectAttemptMs = nowMs + waitMs
+      this.connecting = (waitMs > 0
+        ? new Promise<void>(resolve => setTimeout(resolve, waitMs))
+        : Promise.resolve())
+        .then(() => this.connectStream())
+        .finally(() => { this.connecting = undefined })
+    }
     await this.connecting
   }
 
@@ -118,22 +133,29 @@ export class AsrSession {
         socketFactory: this.dependencies.socketFactory,
       })
       console.log(`[momentq-companion] ${new Date().toISOString().slice(11, 23)} 百度实时 ASR 已连接`)
+      this.connectBackoffMs = 0
       if (this.stopped) {
         await stream.cancel()
         return
       }
       this.stream = stream
       for (const chunk of this.audioQueue.splice(0)) stream.sendAudio(chunk)
+      // A reconnect after a mid-session failure must tell the extension the
+      // upstream is back, clearing the interruption note in the panel.
+      if (this.hadConnectFailure) {
+        this.hadConnectFailure = false
+        this.callbacks.send({ type: 'ready', provider: this.dependencies.provider })
+      }
     } catch (error) {
       const raw = error instanceof Error ? error.message : String(error)
-      console.error(`[momentq-companion] ${new Date().toISOString().slice(11, 23)} 百度连接失败：`, raw)
+      this.connectBackoffMs = this.connectBackoffMs === 0 ? 1_000 : Math.min(this.connectBackoffMs * 2, 30_000)
       // Baidu drops a session that received no audio for ~10s (err_no 4002
       // "backend timeout") — the signature of starting on a paused/muted
       // video. Say that instead of the opaque protocol text.
-      const friendly = /closed during handshake|backend timeout|4002/i.test(raw)
+      const friendly = /closed during handshake|backend timeout|4002|handshake timed out/i.test(raw)
         ? '未检测到音频输入：请确认视频正在播放且有声音，然后重新开始转录'
         : raw
-      console.error(`[momentq-companion] ${new Date().toISOString().slice(11, 23)} 百度连接失败：`, friendly)
+      console.error(`[momentq-companion] ${new Date().toISOString().slice(11, 23)} 百度连接失败（${Math.round(this.connectBackoffMs / 1000)}s 后重试）：`, friendly)
       // Leave the session alive: the extension keeps streaming and the next
       // frame retries the connection instead of killing the whole capture.
       this.callbacks.send({
@@ -154,9 +176,16 @@ export class AsrSession {
   }
 
   private handleUpstreamFailure(): void {
-    // Drop the broken connection; audio keeps queueing and the next frame
-    // reopens the upstream so recognition resumes mid-session.
+    // Close the broken connection FOR REAL: leaving it open let late
+    // MID_TEXT frames from the dead stream interleave with the reconnect's
+    // output. Audio keeps queueing and the next frame reopens the upstream.
+    const stream = this.stream
     this.stream = undefined
+    // Reset the sentence anchor so the next stream's first sentence does not
+    // project its start back into pre-failure time.
+    this.sentenceOpenAudio = this.clock.currentAudio()
+    if (stream !== undefined) stream.cancel()
+    this.hadConnectFailure = true
   }
 
   private finalizeSentence(text: string): void {

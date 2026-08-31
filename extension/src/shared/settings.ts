@@ -10,9 +10,9 @@ export const ASR_PROVIDERS = [
 ] as const
 
 export const WHISPER_MODELS = [
-  { id: 'base', label: '快速 · whisper-base（默认）' },
-  { id: 'small', label: '均衡 · whisper-small' },
-  { id: 'large-turbo', label: '精准 · whisper-large-v3-turbo（需 WebGPU）' },
+  { id: 'base', label: '快速 · base（默认）' },
+  { id: 'small', label: '均衡 · small' },
+  { id: 'large-turbo', label: '精准 · turbo（需 WebGPU）' },
 ] as const
 
 export type WhisperModelId = (typeof WHISPER_MODELS)[number]['id']

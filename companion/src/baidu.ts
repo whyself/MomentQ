@@ -139,7 +139,7 @@ export async function openBaiduStream(
   )
   console.log(`[momentq-companion] 百度 WSS 已拨号：${REALTIME_URL.replace(/\?.*/, '')} (devPid ${config.devPid})`)
   socket.on('open', () => {
-    console.log('[momentq-companion] 百度 WSS 已连上，等待 STARTED 确认帧…')
+    console.log('[momentq-companion] 百度 WSS 已连上')
   })
   const openedAt = now()
 
@@ -147,23 +147,25 @@ export async function openBaiduStream(
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(value))
   }
 
-  // One message listener routes every frame: before STARTED it resolves the
+  // One message listener routes every frame: before START it resolves the
   // handshake, afterwards it forwards recognition events exactly once.
+  let startedTimer: ReturnType<typeof setTimeout> | undefined
   let resolveStarted: (() => void) | undefined
-  let rejectStarted: ((error: Error) => void) | undefined
   const startedPromise = new Promise<void>((resolve, reject) => {
-    resolveStarted = resolve
-    rejectStarted = reject
-    const timer = setTimeout(
-      () => reject(new Error('Baidu ASR STARTED handshake timed out')),
+    resolveStarted = () => {
+      if (startedTimer !== undefined) clearTimeout(startedTimer)
+      resolve()
+    }
+    startedTimer = setTimeout(
+      () => reject(new Error('Baidu ASR handshake timed out')),
       STARTED_TIMEOUT_MS,
     )
     socket.once('close', () => {
-      clearTimeout(timer)
+      if (startedTimer !== undefined) clearTimeout(startedTimer)
       reject(new Error('Baidu ASR connection closed during handshake'))
     })
     socket.once('error', (error: Error) => {
-      clearTimeout(timer)
+      if (startedTimer !== undefined) clearTimeout(startedTimer)
       reject(error)
     })
   })

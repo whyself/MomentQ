@@ -1,0 +1,39 @@
+/* Stale-build overlay: after an extension update, a surviving panel document
+   runs the OLD code against the NEW background. This must BLOCK the panel —
+   not just decorate it — until the user reopens the sidebar. (Visual layer:
+   composition.css stays geometry-only by contract.) */
+.momentq-stale-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(12, 12, 16, 0.78);
+  backdrop-filter: blur(2px);
+  pointer-events: all;
+}
+
+.momentq-stale-card {
+  max-width: 300px;
+  margin: 0 24px;
+  padding: 22px 24px;
+  border-radius: 12px;
+  background: #ffffff;
+  color: #18191c;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  display: grid;
+  gap: 10px;
+  text-align: center;
+}
+
+.momentq-stale-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.momentq-stale-text {
+  font-size: 13px;
+  line-height: 1.7;
+  opacity: 0.85;
+}

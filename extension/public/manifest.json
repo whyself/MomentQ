@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "MomentQ（刻问）",
   "description": "使用当前 B 站视频或直播上下文向 MomentQ 提问。",
-  "version": "0.6.10",
+  "version": "0.6.11",
   "permissions": [
     "sidePanel",
     "storage",

@@ -78,14 +78,25 @@ function storedCredentials(value: unknown): StoredBaiduCredentials | null {
 }
 
 export async function loadStoredBaiduCredentials(path: string): Promise<StoredBaiduCredentials | null> {
+  let raw: string
   try {
-    return storedCredentials(JSON.parse(await readFile(path, 'utf8')))
+    raw = await readFile(path, 'utf8')
   } catch {
+    return null // No file yet: simply unconfigured.
+  }
+  try {
+    return storedCredentials(JSON.parse(raw))
+  } catch (error) {
+    // The user SAVED credentials that now silently read as absent — say so
+    // instead of letting them wonder where their configuration went.
+    console.error(`[momentq-companion] 凭据文件无法解析（${path}）：${error instanceof Error ? error.message : String(error)}`)
     return null
   }
 }
 
 export async function saveStoredBaiduCredentials(path: string, value: StoredBaiduCredentials): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, `${JSON.stringify({ baidu: value }, null, 2)}\n`, 'utf8')
+  // 0600: the file holds a plaintext secretKey and must not be readable by
+  // other local users (Windows ACLs on the user profile already scope it).
+  await writeFile(path, `${JSON.stringify({ baidu: value }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
 }
