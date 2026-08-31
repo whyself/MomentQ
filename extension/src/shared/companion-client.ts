@@ -43,7 +43,7 @@ async function companionCall<T>(baseUrl: string, init: RequestInit, fetcher: typ
     // no benefit, and older companions without OPTIONS support would fail.
     response = await fetcher(`${companionOrigin(baseUrl)}/config`, init)
   } catch {
-    throw new CompanionClientError(0, '无法连接本地 companion：请先运行 node companion/dist/index.js')
+    throw new CompanionClientError(0, '无法连接本地 companion：请先运行 scripts\start-local.cmd 启动服务（本地 Whisper 语音识别无需 companion）')
   }
   let envelope: unknown
   try {

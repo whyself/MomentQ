@@ -162,7 +162,9 @@ export async function startPanelSession(request: PanelSessionStart): Promise<voi
       await new Promise<void>((resolve, reject) => {
         if (socket !== undefined && socket.readyState === WebSocket.OPEN) return resolve()
         socket?.addEventListener('open', () => resolve(), { once: true })
-        socket?.addEventListener('error', () => reject(new Error('无法连接本地 companion')), { once: true })
+        socket?.addEventListener('error', () => reject(new Error(
+          '无法连接本地 companion：请先运行 scripts\start-local.cmd 启动服务（或在设置把语音识别切换为本地 Whisper，无需 companion）',
+        )), { once: true })
       })
       // Attach the loss handler only AFTER a successful open: a failed dial
       // fires 'error' and then 'close', and only a healthy connection may
