@@ -214,13 +214,22 @@ export function App({ subscribe }: {
         const identity = current.context.identity
         let pending: Array<{ start: number; end: number; text: string }> = []
         let flushTimer: ReturnType<typeof setTimeout> | undefined
+        let flushRetrying = false
         const flush = async (): Promise<void> => {
-          if (pending.length === 0) return
-          const batch = pending
-          pending = []
-          const client = new MomentQClient({ baseUrl: config?.hostBaseUrl ?? 'http://127.0.0.1:3182' })
-          await client.ensureContent({ identity: current.context.identity, metadata: current.context.metadata })
-          await client.syncTranscript(identity, 'asr', batch)
+          if (pending.length === 0 || flushRetrying) return
+          flushRetrying = true
+          try {
+            const client = new MomentQClient({ baseUrl: config?.hostBaseUrl ?? 'http://127.0.0.1:3182' })
+            await client.ensureContent({ identity: current.context.identity, metadata: current.context.metadata })
+            // Keep the batch until the Host accepts it: a transient failure
+            // (panel tab frozen mid-run, SW restart) re-sends on the next
+            // flush instead of silently dropping recognized text.
+            const batch = pending
+            await client.syncTranscript(identity, 'asr', batch)
+            pending = pending.slice(batch.length)
+          } finally {
+            flushRetrying = false
+          }
         }
         await runPreTranscription({
           bvid: identity.bvid,
@@ -237,8 +246,15 @@ export function App({ subscribe }: {
           },
           isCancelled: () => cancelled,
         })
-        await flush()
-        setPreTranscribe({ running: false, message: '预识别完成，字幕已保存', fraction: 1 })
+        for (let attempt = 0; attempt < 5 && pending.length > 0; attempt += 1) {
+          await flush().catch(() => {})
+          if (pending.length > 0) await new Promise(resolve => setTimeout(resolve, 1_500))
+        }
+        setPreTranscribe(
+          pending.length === 0
+            ? { running: false, message: '预识别完成，字幕已保存', fraction: 1 }
+            : { running: false, message: `预识别完成，但 ${pending.length} 段字幕保存失败：请确认 Host 服务运行中后重试`, fraction: 1 },
+        )
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         if (!/已取消/.test(message)) setPreTranscribe({ running: false, message: `预识别失败：${message}`, fraction: 0 })
