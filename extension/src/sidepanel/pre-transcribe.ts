@@ -99,6 +99,14 @@ export async function decodeAudioToPcm16k(
       data: sample.data,
     }))
     if (decodeError !== undefined) throw new Error(`音频解码失败：${decodeError.message}`)
+    // Batch flush: draining every 500 chunks lets the output callbacks fire
+    // while each decoded AudioData is fully alive. Decoding all ~20k chunks
+    // before a single flush left the queued outputs reclaimed by the time
+    // the copy pass ran (every numberOfFrames read 0 — measured), which
+    // silently produced an empty PCM track.
+    if (decodedAudio.length % 500 === 0) {
+      await decoder.flush().catch(() => {})
+    }
     if (decoder.decodeQueueSize > 200) {
       // Backpressure: wait for the decoder to drain before feeding more.
       await new Promise<void>(resolve => {
@@ -127,28 +135,42 @@ export async function decodeAudioToPcm16k(
     // frames*4 for a stereo source still fails because both PLANES count.
     // Allocate from the format's own frame size and read plane 0 only.
     const channels = Math.max(1, audio.numberOfChannels)
-    // Bulletproof copy: allocationSize() tells us the EXACT byte count the
-    // AudioData requires for plane 0 as f32 — no format arithmetic to get
-    // wrong. (copyTo's destination is sized in bytes.)
+    const format = audio.format ?? 'f32-planar'
+    // Measured mix: MOST chunks are f32-planar but SOME are interleaved;
+    // a planar multi-channel read on those throws 'Invalid planeIndex'.
+    // Branch per chunk, and fall back to channel 0 on any plane error
+    // (a stereo half-mix is far better than failing the whole video).
     const planeBytes = audio.allocationSize({ planeIndex: 0, format: 'f32' })
-    const copyTarget = new Float32Array(planeBytes / 4)
-    audio.copyTo(copyTarget, { planeIndex: 0, format: 'f32' })
+    const plane0 = new Float32Array(planeBytes / 4)
+    audio.copyTo(plane0, { planeIndex: 0, format: 'f32' })
     let mono: Float32Array
-    if (channels > 1) {
-      mono = new Float32Array(copyTarget.length)
-      for (let channel = 1; channel < channels; channel += 1) {
-        const plane = new Float32Array(audio.allocationSize({ planeIndex: channel, format: 'f32' }) / 4)
-        if (plane.length !== copyTarget.length) break // malformed planes: channel 0 only
-        audio.copyTo(plane, { planeIndex: channel, format: 'f32' })
-        for (let frame = 0; frame < plane.length; frame += 1) {
-          mono[frame] = (mono[frame] ?? 0) + (plane[frame] ?? 0)
+    if (channels > 1 && format.includes('planar')) {
+      try {
+        mono = new Float32Array(plane0.length)
+        for (let channel = 1; channel < channels; channel += 1) {
+          const plane = new Float32Array(audio.allocationSize({ planeIndex: channel, format: 'f32' }) / 4)
+          audio.copyTo(plane, { planeIndex: channel, format: 'f32' })
+          for (let frame = 0; frame < plane.length; frame += 1) {
+            mono[frame] = (mono[frame] ?? 0) + (plane[frame] ?? 0)
+          }
         }
+        for (let frame = 0; frame < mono.length; frame += 1) {
+          mono[frame] = (mono[frame] ?? 0) / channels + (plane0[frame] ?? 0) / channels
+        }
+      } catch {
+        mono = plane0
       }
-      for (let frame = 0; frame < mono.length; frame += 1) {
-        mono[frame] = (mono[frame] ?? 0) / channels
+    } else if (channels > 1) {
+      mono = new Float32Array(audio.numberOfFrames)
+      for (let frame = 0; frame < audio.numberOfFrames; frame += 1) {
+        let sum = 0
+        for (let channel = 0; channel < channels; channel += 1) {
+          sum += plane0[frame * channels + channel] ?? 0
+        }
+        mono[frame] = sum / channels
       }
     } else {
-      mono = copyTarget
+      mono = plane0
     }
     audio.close()
     chunks.push(resample(mono, extraction.sampleRate || dash.sampleRate, 16_000))

@@ -1,16 +1,9 @@
 node_modules/
 dist/
-coverage/
 .release/
-data/
-*.tsbuildinfo
-.env
-.env.*
-!.env.example
-
-# Local build artifacts and reference material; kept out of version control.
-extension/releases/
-extension/prototype/
-
-*.local.json
+*.local
 session-dump.jsonl
+test-audio.m4s
+test-audio.pcm
+extension/public/test-audio.m4s
+extension/public/test-audio.pcm
