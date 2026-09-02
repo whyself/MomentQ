@@ -116,6 +116,12 @@ export function apply(ctx: Context): void {
       JSON.stringify(modelMetadata(state), null, 2),
       '</content-metadata>',
     ].join('\n')
+    // MomentQ agents read only the Session transcript and never write files:
+    // the stock @-path and changed-file guidance assumes general file access.
+    for (const name of ['context:file-reference', 'ui:deliverable-file-references']) {
+      const section = assembled.sections.find(candidate => candidate.name === name)
+      if (section !== undefined) section.text = ''
+    }
     return assembled
   })
 }

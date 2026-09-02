@@ -15,6 +15,9 @@ describe('MomentQ Bundle composition', () => {
     expect(composition).toContain('正常完成用户的请求')
     expect(composition).toContain('momentq-dsh-bundle/tool-policy')
     expect(composition).toContain('momentq-dsh-bundle/session-context')
+    expect(composition).toContain('内容总结中每个要点都要带对应的时间点')
+    expect(composition).toContain('时间点必须直接取自字幕行给出的 start/end')
+    expect(composition).toContain('紧邻 ** 的字符必须是汉字、字母或数字')
   })
 
   it('contains no forbidden Agent rows', () => {

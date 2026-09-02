@@ -41,7 +41,11 @@ async function fixture() {
   return { directory, state: result.state, active: result.state.session.active! }
 }
 
-async function assemble(directory: string | undefined, sessionId: string) {
+async function assemble(
+  directory: string | undefined,
+  sessionId: string,
+  setup?: (agentScope: Context, host: Context) => void,
+) {
   const ctx = new Context()
   contexts.push(ctx)
   await ctx.plugin(SystemPrompt, {})
@@ -50,6 +54,7 @@ async function assemble(directory: string | undefined, sessionId: string) {
     session: { header: directory === undefined ? {} : { cwd: directory } },
   } as Agent
   const scope = createScope(ctx, agent)
+  setup?.(scope.ctx, ctx)
   await scope.ctx.plugin(SessionContext)
   return await ctx.systemPrompt.assemble({ scope: scopeOf(scope.ctx)!, agent })
 }
@@ -80,6 +85,26 @@ describe('MomentQ Session context', () => {
     expect(projected.description).toHaveLength(2000)
     expect(projected.tags).toHaveLength(10)
     expect(projected.tags?.every(tag => [...tag].length <= 50)).toBe(true)
+  })
+
+  it('clears the stock file-reference guidance that assumes general file access', async () => {
+    const { directory, active } = await fixture()
+    const assembly = await assemble(directory, active.id, (agentScope, host) => {
+      agentScope.inject(['systemPrompt'], (scope) => {
+        scope.systemPrompt.section({
+          name: 'context:file-reference',
+          order: 99,
+          text: 'Paths prefixed with @ are files explicitly referenced by the user.',
+        })
+      })
+      host.systemPrompt.section({
+        name: 'ui:deliverable-file-references',
+        order: 190,
+        text: 'changed-file references clickable in Web',
+      })
+    })
+    expect(assembly.sections.find(section => section.name === 'context:file-reference')?.text).toBe('')
+    expect(assembly.sections.find(section => section.name === 'ui:deliverable-file-references')?.text).toBe('')
   })
 
   it('finds the original instructions when an archived Session is resumed', async () => {
