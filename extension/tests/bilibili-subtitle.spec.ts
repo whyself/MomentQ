@@ -79,7 +79,7 @@ describe('Bilibili subtitle acquisition', () => {
         { start: 1.5, end: 2.5, text: '第二行' },
       ],
       definitiveEmpty: false,
-      diagnostic: '官方轨 2 条，已取到 2 行',
+      diagnostic: '字幕轨 2 条，已取到 2 行',
     })
     expect(calls).toEqual([
       'https://api.bilibili.com/x/player/wbi/v2?bvid=BV1xx&cid=42',
@@ -119,7 +119,12 @@ describe('Bilibili subtitle acquisition', () => {
     expect(calls).toEqual(['https://api.bilibili.com/x/player/wbi/v2?bvid=BV1xx&cid=42'])
   })
 
-  it('never imports AI-only tracks through the unsigned channel', async () => {
+  it('imports AI tracks from the credentialed WBI channel', async () => {
+    // Policy revision: the WBI query IS credentialed — materially the same
+    // request the player itself makes — so its AI tracks (the only tracks
+    // AI-only videos have) are imported. Cross-video poison defenses stay:
+    // identity echo above, the caller's duration gate, the
+    // proven-trackless veto, and the subtitle-host URL whitelist.
     const request: typeof fetch = async (input) => {
       if (String(input).includes('/x/player/wbi/v2')) {
         return new Response(JSON.stringify({
@@ -127,18 +132,17 @@ describe('Bilibili subtitle acquisition', () => {
           data: {
             bvid: 'BV1xx', cid: 42,
             subtitle: { subtitles: [
-              // Poisoned server-side AI track from an unrelated video.
-              { lan: 'ai-zh', lan_doc: '中文（自动翻译）', ai_type: 1, subtitle_url: '//aisubtitle.hdslb.com/poison.json' },
+              { lan: 'ai-zh', lan_doc: '中文（自动翻译）', ai_type: 1, subtitle_url: '//aisubtitle.hdslb.com/ai.json' },
             ] },
           },
         }), { status: 200 })
       }
-      return new Response(JSON.stringify({ body: [{ from: 0, to: 1, content: '别的视频' }] }), { status: 200 })
+      return new Response(JSON.stringify({ body: [{ from: 0, to: 1, content: '本视频的AI字幕' }] }), { status: 200 })
     }
     await expect(fetchBilibiliSubtitle('BV1xx', '42', request)).resolves.toEqual({
-      segments: null,
+      segments: [{ start: 0, end: 1, text: '本视频的AI字幕' }],
       definitiveEmpty: false,
-      diagnostic: '仅 AI 轨（未签名通道不导入）: ai-zh(中文（自动翻译）)',
+      diagnostic: '字幕轨 1 条，已取到 1 行',
     })
   })
 
