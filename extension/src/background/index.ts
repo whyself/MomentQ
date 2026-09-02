@@ -1302,6 +1302,16 @@ async function handleRequest(
       const next = { ...withoutSubs, transcription: 'inactive' as const }
       await writeState(tabId, next)
       publishState(tabId, next)
+      // Reset the probe caches for this identity: without this, a video
+      // whose Bilibili track was already imported/verified would NEVER be
+      // re-probed after a clear, and an official track wiped by the Host
+      // clear could not come back (user-reported).
+      if (state.context.kind === 'vod') {
+        const verifyKey = `${state.context.identity.bvid}:${state.context.identity.cid}`
+        verifiedSubtitleIdentities.delete(verifyKey)
+        provenTracklessIdentities.delete(verifyKey)
+        subtitleRetryNotBefore.delete(verifyKey)
+      }
       return { cleared: true }
     })
   }
