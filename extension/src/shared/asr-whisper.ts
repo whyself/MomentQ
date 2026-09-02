@@ -1,14 +1,23 @@
 /**
  * Local Whisper fallback engine (transformers.js). Loaded lazily on first
  * use; model weights download from the HuggingFace hub on first run and are
- * cached by the browser afterwards. Everything runs inside the side-panel
- * document — no companion, no cloud key, no proxy dependency.
+ * cached by the browser afterwards. Runs in whichever extension document
+ * hosts a local-engine session (the offscreen document, or the panel as
+ * fallback) — no companion, no cloud key, no proxy dependency.
  */
+
+/** A chunk as returned by the pipeline with `return_timestamps: true`. */
+type WhisperRawChunk = {
+  text?: string
+  /** [start, end] in seconds; `end` may be null on the final chunk. */
+  timestamp?: [number, number | null] | number | null
+  language?: string
+}
 
 type WhisperPipeline = ((
   audio: Float32Array,
-  options: { language?: string; task?: string },
-) => Promise<{ text?: string }>)
+  options: { language?: string; task?: string; return_timestamps?: boolean },
+) => Promise<{ text?: string; chunks?: WhisperRawChunk[] }>)
 
 const MODEL_IDS = {
   base: 'onnx-community/whisper-base',
@@ -252,9 +261,107 @@ export function ensureWhisper(model: WhisperModel, onStatus: (status: string) =>
   return promise
 }
 
-/** Transcribe one 16 kHz mono chunk to trimmed text. */
-export async function transcribeChunk(audio: Float32Array, model: WhisperModel, onStatus: (status: string) => void): Promise<string> {
+/** One timed line of recognized speech (seconds, relative to the input audio). */
+export type WhisperSegment = { text: string; start: number; end: number }
+
+/**
+ * Line-breaking policy: whisper's own punctuation marks the boundaries. A
+ * line breaks only when the model's text ends a sentence (。！？!?…；;).
+ * Gaps and lengths are deliberately NOT used: the base model emits a
+ * timestamp token at every phrase boundary with 0.3-0.9 s pauses, so any
+ * gap threshold slices continuous lecture speech into a few-character line,
+ * and a character/duration cap would chop well-formed sentences. When the
+ * model marks no boundary the line keeps growing — that's the model saying
+ * "still one sentence".
+ */
+const SENTENCE_END_PUNCT = new Set(['。', '！', '？', '!', '?', '…', '；', ';'])
+const CLAUSE_END_PUNCT = new Set(['，', ',', '、', '：', ':'])
+
+function endsWithAny(text: string, set: Set<string>): boolean {
+  const last = text[text.length - 1] ?? ''
+  return set.has(last)
+}
+
+function closeSentence(text: string): string {
+  if (endsWithAny(text, SENTENCE_END_PUNCT)) return text
+  // A trailing clause comma (a whisper chunk boundary) reads as a pause, not
+  // a full stop: upgrade it instead of stacking "，。".
+  if (endsWithAny(text, CLAUSE_END_PUNCT)) return `${text.slice(0, -1)}。`
+  return `${text}。`
+}
+
+function joinClause(previous: string, next: string): string {
+  if (endsWithAny(previous, CLAUSE_END_PUNCT)) return previous + next
+  return `${previous}，${next}`
+}
+
+/**
+ * Turn one `return_timestamps: true` result into timed lines. Chunks are
+ * whisper's own end-of-phrase segments; lines break only where the model's
+ * own text ends a sentence (its semantic boundary), and make the
+ * punctuation explicit (the base model often emits Chinese text with little
+ * or none), so every line a subtitle renderer shows is a self-contained
+ * sentence with its own [start, end]. U+FFFD (upstream decoding corruption)
+ * is stripped and empty chunks dropped.
+ */
+export function buildSegments(
+  result: { text?: string; chunks?: WhisperRawChunk[] },
+  maxSeconds?: number,
+): WhisperSegment[] {
+  const chunks = (result.chunks ?? [])
+    .map(chunk => {
+      const t = chunk.timestamp
+      const start = typeof t === 'number' ? t : Array.isArray(t) ? t[0] : Number.NaN
+      const rawEnd = typeof t === 'number' ? t : Array.isArray(t) ? t[1] : null
+      const text = (chunk.text ?? '').replace(/\uFFFD/g, '').trim()
+      if (text === '' || !Number.isFinite(start)) return null
+      const end = typeof rawEnd === 'number' && Number.isFinite(rawEnd) ? Math.max(start, rawEnd) : start
+      return { text, start: Math.max(0, start), end }
+    })
+    .filter((chunk): chunk is WhisperSegment => chunk !== null)
+  if (chunks.length === 0) {
+    // Some backends answer with a plain string and no chunks: one untimed
+    // line is still better than dropping the whole window.
+    const flat = (result.text ?? '').replace(/\uFFFD/g, '').trim()
+    return flat === '' ? [] : [{ text: flat, start: 0, end: maxSeconds ?? 0 }]
+  }
+  const lines: WhisperSegment[] = []
+  let line: WhisperSegment | null = null
+  for (const chunk of chunks) {
+    if (line === null) {
+      line = { ...chunk }
+      continue
+    }
+    // The model's own sentence-end punctuation is the only line boundary —
+    // its semantic judgment, not a gap/length heuristic.
+    if (endsWithAny(line.text, SENTENCE_END_PUNCT)) {
+      lines.push({ text: closeSentence(line.text), start: line.start, end: line.end })
+      line = { ...chunk }
+    } else {
+      line = { text: joinClause(line.text, chunk.text), start: line.start, end: chunk.end }
+    }
+  }
+  if (line !== null) lines.push({ text: closeSentence(line.text), start: line.start, end: line.end })
+  if (maxSeconds !== undefined) {
+    for (const line of lines) {
+      line.start = Math.min(line.start, maxSeconds)
+      line.end = Math.min(Math.max(line.end, line.start), maxSeconds)
+    }
+  }
+  return lines
+}
+
+/**
+ * Transcribe one 16 kHz mono chunk into timed sentence lines (seconds from
+ * the chunk's start). Uses whisper's built-in timestamp tokens — the only
+ * alignment the onnx-community exports support.
+ */
+export async function transcribeSegments(
+  audio: Float32Array,
+  model: WhisperModel,
+  onStatus: (status: string) => void,
+): Promise<WhisperSegment[]> {
   const asr = await ensureWhisper(model, onStatus)
-  const result = await asr(audio, { language: 'zh', task: 'transcribe' })
-  return (result.text ?? '').trim()
+  const result = await asr(audio, { language: 'zh', task: 'transcribe', return_timestamps: true })
+  return buildSegments(result, audio.length / 16_000)
 }

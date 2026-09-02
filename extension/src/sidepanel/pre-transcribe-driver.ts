@@ -7,7 +7,7 @@
  */
 
 import { decodeAudioToPcm16k, fetchDashAudio } from './pre-transcribe'
-import { transcribeChunk, type WhisperModel } from './asr-whisper'
+import { transcribeSegments, type WhisperModel, type WhisperSegment } from '../shared/asr-whisper'
 import { loadSettings } from '../shared/settings-store'
 
 export type PreTranscribeProgress = {
@@ -23,6 +23,15 @@ export type PreTranscribeHandle = { cancel: () => void }
 const WINDOW_SECONDS = 30
 const SAMPLE_RATE = 16_000
 const WINDOW_SAMPLES = WINDOW_SECONDS * SAMPLE_RATE
+/**
+ * Lecture speech runs ~4-6 Chinese chars/s (healthy windows measured at
+ * ~150 chars / 30 s). Below this density the window almost always means
+ * whisper emitted EOS early and dropped the rest — measured in the field:
+ * 19 chars for 30 s of continuous lecture, with the missing middle audible
+ * in the video. Such windows are retried as two 15 s halves: the cut lands
+ * at a different utterance point and each half starts on a cleaner boundary.
+ */
+const MIN_CHARS_PER_SECOND = 2
 
 /**
  * Run the whole pipeline. `onSegments` receives each completed window as
@@ -38,7 +47,7 @@ export async function runPreTranscription(options: {
   onProgress: (progress: PreTranscribeProgress) => void
   onSegments: (segments: Array<{ start: number; end: number; text: string }>) => Promise<void> | void
   isCancelled: () => boolean
-}): Promise<void> {
+}): Promise<{ skipped: number }> {
   const { bvid, cid, durationSeconds, model, onProgress, onSegments, isCancelled } = options
   const throwIfCancelled = (): void => {
     if (isCancelled()) throw new Error('已取消预识别')
@@ -98,6 +107,7 @@ export async function runPreTranscription(options: {
   }
 
   const windows = Math.ceil(pcm.length / WINDOW_SAMPLES)
+  let skipped = 0
   for (let index = 0; index < windows; index += 1) {
     throwIfCancelled()
     const startSample = index * WINDOW_SAMPLES
@@ -112,8 +122,64 @@ export async function runPreTranscription(options: {
       stage: 'transcribing',
       message: `识别中 ${Math.floor(start / 60)}:${String(Math.floor(start % 60)).padStart(2, '0')} / ${Math.floor(end / 60)}:${String(Math.floor(end % 60)).padStart(2, '0')}（${index + 1}/${windows} 段）`,
     })
-    const text = (await transcribeChunk(window, model, () => {})).trim()
-    if (text !== '') await onSegments([{ start: Math.round(start * 100) / 100, end: Math.round(end * 100) / 100, text }])
+    // One window yields several timed sentence lines (whisper's own
+    // end-of-phrase chunks, gap-segmented and punctuated — U+FFFD is
+    // stripped inside buildSegments, and the Host still refuses any batch
+    // that carries it). A window that is nothing but silence or corruption
+    // is skipped instead of persisted as garbage.
+    const windowSeconds = window.length / SAMPLE_RATE
+    const charCount = (list: WhisperSegment[]): number =>
+      list.reduce((sum, segment) => sum + segment.text.length, 0)
+    let segments = await transcribeSegments(window, model, () => {})
+    let totalChars = charCount(segments)
+    // Sparse-window retry: whisper emits EOS early on some 30 s windows and
+    // silently drops the rest (see MIN_CHARS_PER_SECOND). Split the window
+    // into two 15 s halves and keep the retry only when it recovered
+    // strictly more speech — a genuinely quiet window must never be swapped
+    // for worse output.
+    if (totalChars > 0 && totalChars / windowSeconds < MIN_CHARS_PER_SECOND) {
+      onProgress({
+        fraction,
+        stage: 'transcribing',
+        message: `第 ${index + 1} 段识别偏短（${totalChars} 字），拆分重试中…`,
+      })
+      const half = Math.floor(window.length / 2)
+      const halfSeconds = half / SAMPLE_RATE
+      const parts = [window.subarray(0, half), window.subarray(half)]
+      const retried: WhisperSegment[] = []
+      for (let partIndex = 0; partIndex < parts.length; partIndex += 1) {
+        throwIfCancelled()
+        const part = parts[partIndex]
+        if (part === undefined) continue
+        // The second half's chunk times are relative to the half's own start;
+        // shift them onto the window timeline before merging.
+        const offset = partIndex * halfSeconds
+        for (const segment of await transcribeSegments(part, model, () => {})) {
+          retried.push({ text: segment.text, start: segment.start + offset, end: segment.end + offset })
+        }
+      }
+      const retriedChars = charCount(retried)
+      if (retriedChars > totalChars) {
+        console.warn(`[momentq] 第 ${index + 1} 段（${Math.round(start)}-${Math.round(end)}s）识别偏短 ${totalChars} 字，拆半重试后 ${retriedChars} 字`)
+        segments = retried
+        totalChars = retriedChars
+      } else {
+        console.warn(`[momentq] 第 ${index + 1} 段（${Math.round(start)}-${Math.round(end)}s）识别偏短 ${totalChars} 字，拆半重试未改善（${retriedChars} 字），保留原结果`)
+      }
+    }
+    if (totalChars === 0) {
+      skipped += 1
+      console.warn(`[momentq] 预识别跳过第 ${index + 1} 段（${Math.round(start)}-${Math.round(end)}s）：识别结果为空或含乱码`)
+      continue
+    }
+    // Window-relative → media-true, rounded to centiseconds; clamped to the
+    // window so a late chunk timestamp can never overlap the next window.
+    await onSegments(segments.map(segment => ({
+      start: Math.round((start + segment.start) * 100) / 100,
+      end: Math.round(Math.min(start + segment.end, end) * 100) / 100,
+      text: segment.text,
+    })))
   }
   onProgress({ fraction: 1, stage: 'done', message: '预识别完成' })
+  return { skipped }
 }

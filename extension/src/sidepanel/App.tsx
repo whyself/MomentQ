@@ -221,6 +221,7 @@ export function App({ subscribe }: {
         let pending: Array<{ start: number; end: number; text: string }> = []
         let flushTimer: ReturnType<typeof setTimeout> | undefined
         let flushRetrying = false
+        let flushError: string | null = null
         const flush = async (): Promise<void> => {
           if (pending.length === 0 || flushRetrying) return
           flushRetrying = true
@@ -236,14 +237,16 @@ export function App({ subscribe }: {
             }) as { ok?: unknown; error?: { message?: unknown } } | null
             if (reply === null || reply.ok !== true) {
               const detail = reply?.error && typeof reply.error.message === 'string' ? reply.error.message : '未知错误'
+              flushError = detail
               throw new Error(detail)
             }
+            flushError = null
             pending = []
           } finally {
             flushRetrying = false
           }
         }
-        await runPreTranscription({
+        const { skipped } = await runPreTranscription({
           bvid: identity.bvid,
           cid: identity.cid,
           durationSeconds: current.context.metadata.durationSeconds,
@@ -267,8 +270,12 @@ export function App({ subscribe }: {
               segments: all,
             }).catch(() => {})
             // Persist per window so a cancelled run still keeps its tail.
+            // The debounced call must swallow its own rejection: the final
+            // retry loop below is the single place that reports failures,
+            // and an unobserved flush would surface as "Uncaught (in
+            // promise)" in the panel console.
             if (flushTimer === undefined) {
-              flushTimer = setTimeout(() => { flushTimer = undefined; void flush() }, 1_500)
+              flushTimer = setTimeout(() => { flushTimer = undefined; void flush().catch(() => {}) }, 1_500)
             }
           },
           isCancelled: () => cancelled,
@@ -279,8 +286,8 @@ export function App({ subscribe }: {
         }
         setPreTranscribe(
           pending.length === 0
-            ? { running: false, message: '预识别完成，字幕已保存', fraction: 1 }
-            : { running: false, message: `预识别完成，但 ${pending.length} 段字幕保存失败：请确认 Host 服务运行中后重试`, fraction: 1 },
+            ? { running: false, message: skipped > 0 ? `预识别完成，字幕已保存（跳过 ${skipped} 段空/乱码识别）` : '预识别完成，字幕已保存', fraction: 1 }
+            : { running: false, message: `预识别完成，但 ${pending.length} 段字幕保存失败（${flushError ?? '未知错误'}）：请确认 DSH Host 运行正常后重新预识别`, fraction: 1 },
         )
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
@@ -327,11 +334,14 @@ export function App({ subscribe }: {
     })()
   }
 
-  // Panel-run capture session lifecycle. On this Edge build a capture stream
-  // id is only consumable in the context that minted it, so the panel is the
-  // sole mint-and-consume surface: the background flips state and requests a
-  // start here; every entry (menu, shortcut, toolbar, panel button) funnels
-  // through that request. Confirms via MOMENTQ_ASR_SESSION (watchdog-covered).
+  // Panel-run capture session lifecycle. The panel always MINTS the capture
+  // id here (it owns the click gesture); by default it then hands the id to
+  // the background for offscreen hosting, and consumes it itself only when
+  // the background asked with consumer:'panel' — on this Edge build an id
+  // is only consumable in the context that minted it, so that is the
+  // offscreen-failure fallback. Every entry (menu, shortcut, toolbar, panel
+  // button) funnels through this request. Confirms via MOMENTQ_ASR_SESSION
+  // (watchdog-covered).
   const stateRef = useRef(state)
   stateRef.current = state
   const settingsRef = useRef(settings)
@@ -355,12 +365,13 @@ export function App({ subscribe }: {
         }).catch(() => {})
         return
       }
-      // Local Whisper is hosted by this panel document (model + WebGPU), and
-      // a 'panel' consumer means offscreen already failed for this start.
-      // Everything else hands the minted id to the background, which delivers
-      // it to the offscreen host: closing the panel then never ends the
-      // session.
-      if (consumer === 'panel' || config?.asrProvider === 'whisper-local') {
+      // A 'panel' consumer means the offscreen start already failed for
+      // this start: the panel consumes the id itself, hosting whichever
+      // engine is configured (local Whisper included — model + WebGPU run in
+      // this document as the fallback). Everything else hands the id to the
+      // background, which delivers it to the offscreen host: closing the
+      // panel then never ends the session.
+      if (consumer === 'panel') {
         try {
           await startPanelSession({
             tabId,
@@ -406,11 +417,16 @@ export function App({ subscribe }: {
         return false
       }
       if (record.type === 'MOMENTQ_ASR_QUERY') {
-        // Inline answer: the ack watchdog and SW-restart recovery both depend
-        // on this reply arriving as a response, not as a side broadcast.
-        try {
-          sendResponse({ type: 'MOMENTQ_ASR_SESSION', tabId: panelSessionTabId() })
-        } catch { /* dead context */ }
+        // Only a HOSTING panel claims the session. A "tabId:null" answer
+        // while not hosting would race the offscreen's answer and read as
+        // "the session ended" — closing the live offscreen document right
+        // after a service-worker restart (the keep-alive killer).
+        const hostedTabId = panelSessionTabId()
+        if (hostedTabId !== null) {
+          try {
+            sendResponse({ type: 'MOMENTQ_ASR_SESSION', tabId: hostedTabId, owner: 'panel' })
+          } catch { /* dead context */ }
+        }
         return false
       }
       return false

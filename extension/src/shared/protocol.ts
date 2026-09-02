@@ -1,3 +1,5 @@
+import type { WhisperModelId } from './settings'
+
 export type BilibiliPageSnapshot = {
   url: string
   canonicalUrl?: string
@@ -216,9 +218,18 @@ export type AsrStartFromPanelMessage = {
 export type AsrStartMessage = {
   type: 'MOMENTQ_ASR_START'
   tabId: number
-  streamId: string
+  /**
+   * Absent: the offscreen document mints its own id. A panel-minted id can
+   * be bound to the minting context (Edge refuses the cross-context
+   * handoff), so a failed handoff is retried with a self-minted id before
+   * falling back to the panel-hosted session.
+   */
+  streamId?: string
   identity: BilibiliContext['identity']
   companionBaseUrl: string
+  /** Which engine the offscreen document hosts for this session. */
+  engine: 'baidu' | 'whisper'
+  whisperModel: WhisperModelId
 }
 
 export type AsrClockMessage = {
@@ -231,6 +242,15 @@ export type AsrPauseMessage = { type: 'MOMENTQ_ASR_PAUSE' }
 export type AsrResumeMessage = { type: 'MOMENTQ_ASR_RESUME' }
 export type AsrStopMessage = { type: 'MOMENTQ_ASR_STOP' }
 export type AsrQueryMessage = { type: 'MOMENTQ_ASR_QUERY' }
+
+/**
+ * Liveness probe for the offscreen listener. Deliberately separate from
+ * MOMENTQ_ASR_QUERY: a QUERY answer claims session ownership, so a
+ * non-hosting context must stay silent (its "tabId:null" would read as
+ * "the session ended" and close the live offscreen document).
+ */
+export type AsrPingMessage = { type: 'MOMENTQ_ASR_PING' }
+export type AsrPongMessage = { type: 'MOMENTQ_ASR_PONG' }
 
 /** Offscreen → background session answer (also used after service-worker restarts). */
 export type AsrSessionMessage = {

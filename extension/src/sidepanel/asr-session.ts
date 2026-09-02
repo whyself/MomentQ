@@ -1,13 +1,16 @@
 /**
- * Side-panel capture session: the panel page is an extension surface with
- * its own click gesture, and consuming the tab-capture stream in the SAME
- * context that acquired the stream id is the pattern Edge actually honors
- * (its offscreen document fails with "Error starting tab capture").
+ * Side-panel capture session — the FALLBACK host. The primary home of every
+ * capture session is the offscreen document (it survives the panel closing);
+ * on some Edge builds a tab-capture stream id is only consumable in the
+ * context that minted it, and that is the panel: when the background's
+ * offscreen start fails it retries with consumer:'panel', and this surface
+ * hosts the session the old way — closing the panel then ends it, but
+ * starting works.
  *
- * Two engines live behind this one surface:
+ * Two engines can live behind this one surface:
  *  - 'baidu'   streams 16 kHz PCM to the local companion → Baidu realtime ASR
- *  - 'whisper' runs transformers.js Whisper locally in this document (the
- *              offline fallback: no companion, no cloud key, no proxy)
+ *  - 'whisper' runs the shared local-Whisper runtime (transformers.js,
+ *              WebGPU) in this document
  *
  * The floating page ball and the panel button pause/resume via the background.
  */
@@ -17,7 +20,8 @@ import type {
 } from '../shared/protocol'
 import { isCompanionServerMessage } from '../../../shared/src/companion-protocol'
 import { floatToInt16, int16ToBuffer, resampleLinear } from '../offscreen/pcm'
-import { transcribeChunk, type WhisperModel } from './asr-whisper'
+import { WhisperLiveSession } from '../shared/whisper-live'
+import type { WhisperModel } from '../shared/asr-whisper'
 
 export type PanelSessionStart = {
   tabId: number
@@ -28,43 +32,13 @@ export type PanelSessionStart = {
   whisperModel: WhisperModel
 }
 
-type WhisperChunk = { audio: Float32Array; /** Media time at chunk START. */ startMedia: number }
-type WhisperRuntime = {
-  model: WhisperModel
-  /** Audio awaiting inference, in arrival order, media-time stamped. */
-  queue: WhisperChunk[]
-  queuedSamples: number
-  processing: boolean
-  paused: boolean
-  totalSamples: number
-  lastMediaSeconds: number | null
-  droppedChunks: number
-  /**
-   * Segments whose start predates the newest seek are stale: their audio was
-   * captured on an abandoned timeline, so they are dropped instead of
-   * persisted (the source of the "seek scrambles subtitles" reports).
-   */
-  timelineEpoch: number
-  seekGeneration: number
-}
-
 type RunningSession = {
   tabId: number
   stream: MediaStream
   context: AudioContext
   socket: WebSocket | undefined
-  whisper: WhisperRuntime | undefined
+  whisper: WhisperLiveSession | undefined
 }
-
-const WHISPER_CHUNK_SAMPLES = 5 * 16_000
-// Bounded waiting room for audio produced while inference is busy (above all
-// during the first model download, which can run for many minutes). Beyond
-// this window the OLDEST audio is dropped with a visible counter instead of
-// silently losing the session's opening — or growing without bound.
-const WHISPER_MAX_QUEUE_SAMPLES = 60 * 16_000
-// Upper bound on one inference call: merging minutes of audio hurts both
-// latency and timestamp accuracy.
-const WHISPER_MAX_UTTERANCE_SAMPLES = 30 * 16_000
 
 let session: RunningSession | undefined
 
@@ -80,26 +54,8 @@ function reportEvent(tabId: number, event: import('../../../shared/src/companion
 export function sessionClock(seconds: number): void {
   if (session === undefined) return
   if (session.whisper !== undefined) {
-    // While transcription is paused the video keeps playing; freezing the
-    // clock keeps the resumed chunks' timestamps aligned with the audio that
-    // will actually be transcribed instead of skipping the paused span.
-    if (session.whisper.paused) return
-    const runtime = session.whisper
-    const previous = runtime.lastMediaSeconds
-    runtime.lastMediaSeconds = seconds
-    if (previous !== null) {
-      // Normal playback advances ~1x; poll jitter is small. A jump backwards,
-      // or forwards beyond what realtime capture could have produced since
-      // the last tick, means the user seeked (or changed speed): the queued
-      // audio was captured on a timeline that no longer exists.
-      const drift = seconds - previous
-      if (drift < -1.5 || drift > 8) {
-        runtime.seekGeneration += 1
-        runtime.queue = []
-        runtime.queuedSamples = 0
-        runtime.timelineEpoch = runtime.seekGeneration
-      }
-    }
+    // The runtime owns the pause guard and seek detection.
+    session.whisper.clock(seconds)
     return
   }
   if (session.socket !== undefined && session.socket.readyState === WebSocket.OPEN) {
@@ -115,6 +71,7 @@ export async function stopPanelSession(): Promise<void> {
   const current = session
   if (current === undefined) return
   session = undefined
+  current.whisper?.dispose()
   if (current.socket !== undefined) {
     const socket = current.socket
     // Detach BEFORE closing: an intentional stop must not fall into the
@@ -139,9 +96,7 @@ export async function stopPanelSession(): Promise<void> {
 export function pausePanelSession(paused: boolean): void {
   if (session === undefined) return
   if (session.whisper !== undefined) {
-    // Track disabling would feed silence into the chunker; hold the buffer
-    // instead so resumed speech continues the same timeline.
-    session.whisper.paused = paused
+    session.whisper.setPaused(paused)
     return
   }
   session.stream.getAudioTracks().forEach(track => { track.enabled = !paused })
@@ -206,8 +161,8 @@ export async function startPanelSession(request: PanelSessionStart): Promise<voi
       }))
     }
 
-    const whisper: WhisperRuntime | undefined = request.engine === 'whisper'
-      ? { model: request.whisperModel, queue: [], queuedSamples: 0, processing: false, paused: false, totalSamples: 0, lastMediaSeconds: null, droppedChunks: 0, timelineEpoch: 0, seekGeneration: 0 }
+    const whisper: WhisperLiveSession | undefined = request.engine === 'whisper'
+      ? new WhisperLiveSession(request.whisperModel, event => reportEvent(request.tabId, event))
       : undefined
     session.whisper = whisper
 
@@ -235,20 +190,15 @@ export async function startPanelSession(request: PanelSessionStart): Promise<voi
       }
     } else {
       // Local engine: queue audio in arrival order and transcribe strictly
-      // sequentially. Nothing is dropped while the model loads — the bounded
-      // queue holds up to 60s and drains once inference is ready.
+      // sequentially (queue bounds, seek detection and staleness guards
+      // live in the runtime — the same instance the offscreen host uses).
       node.port.onmessage = (event: MessageEvent<Float32Array>) => {
         const chunk = event.data
         if (chunk === undefined || whisper === undefined) return
-        if (whisper.paused) return
         const atRate = context.sampleRate !== 16_000
           ? resampleLinear(chunk, context.sampleRate, 16_000)
           : chunk
-        const startMedia = whisper.lastMediaSeconds ?? whisper.totalSamples / 16_000
-        whisper.queue.push({ audio: atRate, startMedia })
-        whisper.queuedSamples += atRate.length
-        whisper.totalSamples += atRate.length
-        if (whisper.queuedSamples >= WHISPER_CHUNK_SAMPLES) void pumpWhisper(request.tabId, whisper)
+        whisper.feed(atRate)
       }
     }
     source.connect(node)
@@ -270,85 +220,6 @@ export async function startPanelSession(request: PanelSessionStart): Promise<voi
     // always reaches the created stream/context/socket.
     await stopPanelSession()
   }
-}
-
-/** Drain the whisper queue sequentially; bounded, ordered, never parallel. */
-async function pumpWhisper(tabId: number, runtime: WhisperRuntime): Promise<void> {
-  if (runtime.processing) return
-  runtime.processing = true
-  try {
-    while (runtime.queue.length > 0) {
-      if (session?.whisper !== runtime) return // session ended or replaced
-      // The reader keeps falling behind: drop the OLDEST audio with a
-      // visible counter rather than growing without bound.
-      while (runtime.queuedSamples > WHISPER_MAX_QUEUE_SAMPLES && runtime.queue.length > 1) {
-        const dropped = runtime.queue.shift()
-        if (dropped === undefined) break
-        runtime.queuedSamples -= dropped.audio.length
-        runtime.droppedChunks += 1
-        reportEvent(tabId, { type: 'partial', text: `推理跟不上播放，已跳过最早的 ${runtime.droppedChunks} 段音频` })
-      }
-      const pieces: WhisperChunk[] = []
-      let samples = 0
-      while (runtime.queue.length > 0 && samples < WHISPER_MAX_UTTERANCE_SAMPLES) {
-        const next = runtime.queue.shift()
-        if (next === undefined) break
-        pieces.push(next)
-        runtime.queuedSamples -= next.audio.length
-        samples += next.audio.length
-      }
-      const epochAtDequeue = runtime.seekGeneration
-      await transcribeUtterance(tabId, concatSamples(pieces.map(piece => piece.audio)), runtime, {
-        startMedia: pieces[0]?.startMedia ?? 0,
-        epochAtDequeue,
-      })
-    }
-  } finally {
-    runtime.processing = false
-  }
-}
-
-async function transcribeUtterance(
-  tabId: number,
-  audio: Float32Array,
-  runtime: WhisperRuntime,
-  span: { startMedia: number; epochAtDequeue: number },
-): Promise<void> {
-  const chunkSeconds = audio.length / 16_000
-  try {
-    reportEvent(tabId, { type: 'partial', text: '本地识别中…' })
-    const text = await transcribeChunk(audio, runtime.model, (status: string) => {
-      reportEvent(tabId, { type: 'partial', text: status })
-    })
-    // Attribute finals only while this runtime still owns the live session:
-    // a slow inference must never land its text on a switched video. A seek
-    // during inference invalidates the utterance entirely — its audio was
-    // captured on an abandoned timeline, so persisting it would scatter rows
-    // across the wrong times.
-    if (text !== '' && session?.whisper === runtime && runtime.seekGeneration === span.epochAtDequeue) {
-      const startMedia = Math.max(0, span.startMedia)
-      const endMedia = Math.max(startMedia, span.startMedia + chunkSeconds)
-      reportEvent(tabId, { type: 'final', start: startMedia, end: endMedia, text })
-    }
-  } catch (error) {
-    if (session?.whisper !== runtime) return
-    reportEvent(tabId, {
-      type: 'error',
-      code: 'provider-connect',
-      message: `本地 Whisper 识别失败：${error instanceof Error ? error.message : String(error)}`,
-    })
-  }
-}
-
-function concatSamples(pieces: Float32Array[]): Float32Array {
-  const total = pieces.reduce((sum, piece) => sum + piece.length, 0)
-  const merged = new Float32Array(total)
-  let offset = 0
-  for (const piece of pieces) {
-    merged.set(piece, offset)
-    offset += piece.length
-  }
-  return merged
 }
 
 function sendAudioFrame(socket: WebSocket, samples: Float32Array): void {

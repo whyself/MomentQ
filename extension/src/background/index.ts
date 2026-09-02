@@ -129,6 +129,12 @@ function sendToOffscreen(message: unknown): void {
 
 /** Tabs whose capture session was handed to the offscreen document. */
 const offscreenStarted = new Set<number>()
+/**
+ * Tabs whose offscreen start already burned the self-mint retry. A second
+ * capture-start failure for the same tab goes straight to the panel-hosted
+ * fallback instead of minting again (the gesture surface is gone by then).
+ */
+const mintRetried = new Set<number>()
 
 /** Create the offscreen document when the first session needs it. */
 async function ensureOffscreenDocument(): Promise<boolean> {
@@ -152,13 +158,13 @@ async function ensureOffscreenDocument(): Promise<boolean> {
   }
 }
 
-/** The offscreen listener answers MOMENTQ_ASR_QUERY in-band with owner:'offscreen'. */
+/** The offscreen listener answers MOMENTQ_ASR_PING in-band (liveness only). */
 async function waitUntilOffscreenReady(timeoutMs = 5_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    const reply = await chrome.runtime.sendMessage({ type: 'MOMENTQ_ASR_QUERY' })
-      .catch(() => null) as AsrSessionMessage | null
-    if (reply !== null && reply.type === 'MOMENTQ_ASR_SESSION' && reply.owner === 'offscreen') return true
+    const reply = await chrome.runtime.sendMessage({ type: 'MOMENTQ_ASR_PING' })
+      .catch(() => null) as unknown
+    if (isRecord(reply) && reply.type === 'MOMENTQ_ASR_PONG') return true
     await new Promise(resolve => setTimeout(resolve, 150))
   }
   return false
@@ -290,19 +296,22 @@ function armStartAckWatchdog(tabId: number): void {
   const timer = setTimeout(() => {
     startAckTimers.delete(tabId)
     if (asrTabId !== tabId) return
-    // The panel never confirmed the session; ask it directly (it answers via
-    // sendResponse) and surface the verdict instead of leaving the toggle
-    // 'active' forever.
-    void chrome.runtime.sendMessage({ type: 'MOMENTQ_ASR_QUERY' }).then(reply => {
-      const sessionTab = (reply as { tabId?: number } | null)?.tabId
-      if (asrTabId === tabId && sessionTab !== tabId) {
-        void tabOperations.run(tabId, 'armStartAckWatchdog', async () => {
-          const state = await readState(tabId)
-          if (state === null || state.transcription === 'inactive') return
-          await deactivateTranscription(tabId, state, '采集会话未确认启动，请重试')
-        })
-      }
-    }).catch(() => {})
+    // The session never confirmed; ask the hosting contexts directly (they
+    // answer via sendResponse) and surface the verdict instead of leaving
+    // the toggle 'active' forever. Only hosting documents answer, so a
+    // missing reply means nothing hosts the session.
+    void chrome.runtime.sendMessage({ type: 'MOMENTQ_ASR_QUERY' })
+      .catch(() => null)
+      .then(reply => {
+        const sessionTab = (reply as { tabId?: number | null } | null)?.tabId
+        if (asrTabId === tabId && sessionTab !== tabId) {
+          void tabOperations.run(tabId, 'armStartAckWatchdog', async () => {
+            const state = await readState(tabId)
+            if (state === null || state.transcription === 'inactive') return
+            await deactivateTranscription(tabId, state, '采集会话未确认启动，请重试')
+          })
+        }
+      })
   }, START_ACK_TIMEOUT_MS)
   startAckTimers.set(tabId, timer)
 }
@@ -310,7 +319,7 @@ function armStartAckWatchdog(tabId: number): void {
 async function beginTranscription(
   tabId: number,
   streamId: string | undefined,
-  mode: 'auto' | 'panel-only' = 'auto',
+  mode: 'auto' | 'panel-only' | 'offscreen-mint' = 'auto',
 ): Promise<MomentQTabState | null> {
   const initial = await readState(tabId)
   if (initial === null || initial.transcription !== 'inactive') return await readState(tabId)
@@ -341,27 +350,35 @@ async function beginTranscription(
       await writeState(tabId, next)
       publishState(tabId, next)
       asrTabId = tabId
-      if (mode === 'auto' && streamId !== undefined
-        && settings.asrProvider !== 'whisper-local'
+      const wantsOffscreen = mode === 'offscreen-mint'
+        || (mode === 'auto' && streamId !== undefined)
+      if (wantsOffscreen
         && await ensureOffscreenDocument()
         && await waitUntilOffscreenReady()) {
         // The panel minted the id in its click handler (the reliable gesture
         // surface); the OFFSCREEN document consumes it, so the session — and
-        // transcription — survive closing the side panel. Confirms via
-        // MOMENTQ_ASR_SESSION with owner:'offscreen' (watchdog-covered).
+        // transcription — survive closing the side panel. Baidu streams to
+        // the companion from there; local Whisper runs transformers.js in
+        // that document (shared model cache with the panel's surfaces).
+        // 'offscreen-mint': the handoff failed once, so the id is minted IN
+        // the offscreen document (same context, no cross-context binding).
+        // Confirms via MOMENTQ_ASR_SESSION with owner:'offscreen'
+        // (watchdog-covered).
         offscreenStarted.add(tabId)
         sendToOffscreen({
           type: 'MOMENTQ_ASR_START',
           tabId,
-          streamId,
+          ...(streamId !== undefined ? { streamId } : {}),
           identity: current.context.identity,
           companionBaseUrl: settings.companionBaseUrl,
+          engine: settings.asrProvider === 'whisper-local' ? 'whisper' : 'baidu',
+          whisperModel: settings.whisperModel,
         })
         startClockRelay(tabId)
       } else {
-        // No minted id, local Whisper (panel-hosted model), or a retry after
-        // an offscreen failure: the panel mints and consumes in its own
-        // document. Closing the panel ends this kind of session.
+        // No minted id, or a retry after an offscreen start failure: the
+        // panel mints and consumes in its own document. Closing the panel
+        // ends this kind of session.
         void chrome.runtime.sendMessage({
           type: 'MOMENTQ_ASR_REQUEST_START',
           tabId,
@@ -446,13 +463,21 @@ async function applyAsrEvent(message: AsrEventMessage): Promise<void> {
       || event.code === 'companion-disconnected'
       || event.code === 'capture-start'
     if (event.code === 'capture-start' && offscreenStarted.has(tabId)) {
-      // The offscreen consumer could not start (Edge refusing the handoff).
-      // Fall back ONCE to the panel document, which hosts the session the
-      // old way — closing the panel then ends it, but starting works.
+      // The offscreen consumer could not start: the panel-minted id is
+      // bound to the minting context (the Edge tab-capture quirk). Two
+      // chances before the panel-hosted fallback — first let the offscreen
+      // MINT its own id (created and consumed in the same document, no
+      // handoff), then, if that also fails, host the session in the panel
+      // the old way (closing the panel ends it, but starting works).
       offscreenStarted.delete(tabId)
       stopClockRelay()
-      await deactivateTranscription(tabId, state, `后台会话启动失败（${event.message}），已回退到面板内采集`)
-      void beginTranscription(tabId, undefined, 'panel-only').catch(() => {})
+      const retryMint = !mintRetried.has(tabId)
+      if (retryMint) mintRetried.add(tabId)
+      await deactivateTranscription(tabId, state,
+        retryMint
+          ? `后台会话启动失败（${event.message}），正在换一种方式重试…`
+          : `后台会话启动失败（${event.message}），已回退到面板内采集`)
+      void beginTranscription(tabId, undefined, retryMint ? 'offscreen-mint' : 'panel-only').catch(() => {})
       return
     }
     if (fatal) await deactivateTranscription(tabId, state, event.message)
@@ -500,6 +525,9 @@ async function applyAsrSession(message: AsrSessionMessage): Promise<void> {
   if (message.tabId !== null) {
     asrTabId = message.tabId
     clearStartAckWatchdog(message.tabId)
+    // A confirmed start retires the mint-retry mark: the next start for
+    // this tab gets its own fresh chance.
+    mintRetried.delete(message.tabId)
     if (message.owner === 'offscreen') {
       offscreenStarted.add(message.tabId)
       startClockRelay(message.tabId)
@@ -531,10 +559,15 @@ async function applyAsrSession(message: AsrSessionMessage): Promise<void> {
   await closeOffscreenIfIdle()
 }
 
-/** After a service-worker restart, re-attach to a live offscreen session. */
+/**
+ * After a service-worker restart, re-attach to a live session (offscreen or
+ * panel-hosted). Only a hosting context answers the query, and a tabId:null
+ * answer no longer exists — so NO answer means the state claiming a session
+ * is genuinely orphaned, and the sweep that follows retires it.
+ */
 async function restoreAsrSession(): Promise<void> {
   const reply = await chrome.runtime.sendMessage({ type: 'MOMENTQ_ASR_QUERY' }).catch(() => null) as AsrSessionMessage | null
-  if (reply !== null && isRecord(reply) && reply.type === 'MOMENTQ_ASR_SESSION') {
+  if (reply !== null && isRecord(reply) && reply.type === 'MOMENTQ_ASR_SESSION' && reply.tabId !== null) {
     await applyAsrSession(reply)
   }
 }
@@ -1293,6 +1326,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (asrTabId === tabId) void stopAsrSession(tabId)
   clearStartAckWatchdog(tabId)
   offscreenStarted.delete(tabId)
+  mintRetried.delete(tabId)
   if (clockRelayTabId === tabId) stopClockRelay()
   void tabOperations.run(tabId, 'writeState', () => writeState(tabId, reduceTabState(null, { type: 'REMOVE_TAB' })))
 })
