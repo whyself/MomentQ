@@ -137,7 +137,10 @@ function apiFailure(error: unknown): { status: number; code: ApiErrorCode; messa
     return { status: 500, code: 'internal', message: 'MomentQ request failed' }
   }
   if (/invalid|must|does not match|not accept|exceeds/i.test(message)) {
-    return { status: 400, code: 'invalid-request', message: 'MomentQ request is invalid' }
+    // Loopback single-user surface: the caller's own UI renders the error,
+    // so keep the service's specific reason (e.g. WHICH segment violated
+    // which rule) instead of a bare 'invalid'.
+    return { status: 400, code: 'invalid-request', message: `MomentQ request is invalid: ${message}` }
   }
   if (/conflict|does not own|no active Session/i.test(message)) {
     return { status: 409, code: 'session-conflict', message: 'MomentQ Session state conflicts with this request' }
