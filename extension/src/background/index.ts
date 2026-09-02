@@ -30,7 +30,7 @@ import { MomentQClient } from '../shared/host-client'
 import { loadSettings } from '../shared/settings-store'
 import { trackNeedsChineseTranslation, transcriptExceedsHost } from '../shared/bilibili-subtitle'
 
-type WorkerRequest = PageContextRuntimeMessage | ResolvePageSnapshotMessage | { type: 'MOMENTQ_RESOLVE_DASH_AUDIO'; bvid: string; cid: string } | { type: 'MOMENTQ_PROXY_FETCH'; url: string } | GetTabStateMessage | ToggleTranscriptionMessage | ToggleCurrentTranscriptionMessage | CaptureCurrentFrameMessage | GetCurrentVideoTimeMessage | ClearAsrSubtitlesMessage | PageSubtitleTracksMessageEnvelope | AsrStartFromPanelMessage | AsrEventMessage | AsrSessionMessage | PreTranscribeSegmentsMessage | { type: 'MOMENTQ_ASR_PANEL_CAPTURE_FAILED'; tabId?: unknown; message?: unknown }
+type WorkerRequest = PageContextRuntimeMessage | ResolvePageSnapshotMessage | { type: 'MOMENTQ_PRETRANSCRIBE_SYNC'; identity: { kind: 'vod'; bvid: string; cid: string }; metadata: { title: string; creator: { name: string } }; segments: unknown[] } | { type: 'MOMENTQ_RESOLVE_DASH_AUDIO'; bvid: string; cid: string } | { type: 'MOMENTQ_PROXY_FETCH'; url: string } | GetTabStateMessage | ToggleTranscriptionMessage | ToggleCurrentTranscriptionMessage | CaptureCurrentFrameMessage | GetCurrentVideoTimeMessage | ClearAsrSubtitlesMessage | PageSubtitleTracksMessageEnvelope | AsrStartFromPanelMessage | AsrEventMessage | AsrSessionMessage | PreTranscribeSegmentsMessage | { type: 'MOMENTQ_ASR_PANEL_CAPTURE_FAILED'; tabId?: unknown; message?: unknown }
 
 const storageKey = (tabId: number) => `tab:${tabId}`
 // The queue serializes fast local state mutations only. Network calls never
@@ -73,6 +73,8 @@ function requestType(value: unknown): WorkerRequest['type'] | null {
     || value.type === 'MOMENTQ_CAPTURE_CURRENT_FRAME') return value.type
   if (value.type === 'MOMENTQ_GET_CURRENT_VIDEO_TIME') return value.type
   if (value.type === 'MOMENTQ_CLEAR_ASR_SUBTITLES') return value.type
+  if (value.type === 'MOMENTQ_PRETRANSCRIBE_SYNC'
+    && isRecord(value.identity) && isRecord(value.metadata) && Array.isArray(value.segments)) return value.type
   if (value.type === 'MOMENTQ_PROXY_FETCH' && typeof value.url === 'string' && value.url.startsWith('https://')) return value.type
   if (value.type === 'MOMENTQ_RESOLVE_DASH_AUDIO'
     && typeof value.bvid === 'string' && value.bvid !== ''
@@ -1032,6 +1034,28 @@ async function handleRequest(
         binary += String.fromCharCode(...bytes.subarray(offset, offset + chunk))
       }
       return { ok: true, value: { base64: btoa(binary) } }
+    } catch (error) {
+      return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } }
+    }
+  }
+
+  if (type === 'MOMENTQ_PRETRANSCRIBE_SYNC') {
+    // Panel-side fetches fail intermittently while WebGPU inference hammers
+    // the renderer; the service worker's network stack is unaffected. The
+    // panel forwards its cumulative segments here for Host persistence.
+    const request = message as { identity?: unknown; metadata?: unknown; segments?: unknown }
+    try {
+      if (!isRecord(request.identity) || !isRecord(request.metadata) || !Array.isArray(request.segments)) {
+        return { ok: false, error: { message: 'malformed sync payload' } }
+      }
+      const settings = await loadSettings()
+      const client = new MomentQClient({ baseUrl: settings.hostBaseUrl })
+      await client.ensureContent({
+        identity: request.identity as never,
+        metadata: request.metadata as never,
+      })
+      const result = await client.syncTranscript(request.identity as never, 'asr', request.segments as never)
+      return { ok: true, value: { segments: result.segments } }
     } catch (error) {
       return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } }
     }

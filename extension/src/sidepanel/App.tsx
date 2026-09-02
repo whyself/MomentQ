@@ -225,12 +225,19 @@ export function App({ subscribe }: {
           if (pending.length === 0 || flushRetrying) return
           flushRetrying = true
           try {
-            const client = new MomentQClient({ baseUrl: config?.hostBaseUrl ?? 'http://127.0.0.1:3182' })
-            await client.ensureContent({ identity: current.context.identity, metadata: current.context.metadata })
-            // Keep the batch until the Host accepts it: a transient failure
-            // (panel tab frozen mid-run, SW restart) re-sends on the next
-            // flush instead of silently dropping recognized text.
-            await client.syncTranscript(identity, 'asr', all)
+            // Routed through the background service worker: a panel-side
+            // fetch fails intermittently while WebGPU inference hogs the
+            // renderer, and the SW's network stack is immune to that.
+            const reply = await sendWithRetry({
+              type: 'MOMENTQ_PRETRANSCRIBE_SYNC',
+              identity,
+              metadata: current.context.metadata,
+              segments: all,
+            }) as { ok?: unknown; error?: { message?: unknown } } | null
+            if (reply === null || reply.ok !== true) {
+              const detail = reply?.error && typeof reply.error.message === 'string' ? reply.error.message : '未知错误'
+              throw new Error(detail)
+            }
             pending = []
           } finally {
             flushRetrying = false

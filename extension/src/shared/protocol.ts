@@ -144,6 +144,14 @@ export type GetCurrentVideoTimeMessage = {
   tabId?: number
 }
 
+/** Panel → background: persist pre-transcribed segments via the Host. */
+export type PreTranscribeSyncMessage = {
+  type: 'MOMENTQ_PRETRANSCRIBE_SYNC'
+  identity: { kind: 'vod'; bvid: string; cid: string }
+  metadata: { title: string; creator: { name: string } }
+  segments: Array<{ start: number; end: number; text: string }>
+}
+
 /** Panel → background: resolve the DASH audio stream for offline ASR. */
 export type ResolveDashAudioMessage = {
   type: 'MOMENTQ_RESOLVE_DASH_AUDIO'
