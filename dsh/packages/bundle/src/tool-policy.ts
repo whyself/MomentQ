@@ -40,6 +40,45 @@ function assertAbsent(args: unknown, keys: string[]): void {
   }
 }
 
+function formatTimestamp(totalSeconds: number): string {
+  const whole = Math.max(0, Math.round(totalSeconds))
+  const h = Math.floor(whole / 3600)
+  const m = Math.floor((whole % 3600) / 60)
+  const s = whole % 60
+  return h > 0
+    ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    : `${m}:${String(s).padStart(2, '0')}`
+}
+
+/**
+ * Prepend a seek-renderer-ready [MM:SS–MM:SS] stamp to a transcript.jsonl
+ * row. The model previously had to convert the row's raw seconds into
+ * MM:SS itself and kept failing ([240–268] instead of [04:00–04:28], which
+ * the seek-button renderer then could not match). With the stamp inline it
+ * copies verbatim — no arithmetic left to get wrong.
+ */
+function annotateTranscriptLine(line: string): string {
+  // Fast path: the line is complete JSON.
+  try {
+    const row = JSON.parse(line) as { start?: unknown; end?: unknown; text?: unknown }
+    if (typeof row.start === 'number' && typeof row.end === 'number' && typeof row.text === 'string') {
+      return `[${formatTimestamp(row.start)}–${formatTimestamp(row.end)}] ${row.text}`
+    }
+    return line
+  } catch { /* fall through to the regex path */ }
+  // The read/grep tools truncate long lines; the truncated JSON cannot
+  // parse, but the transcript's shape is fixed — extract the fields with a
+  // tolerant regex so every row still carries its formatted stamp.
+  const match = /"start":\s*([\d.]+)\s*,\s*"end":\s*([\d.]+)(?:[\s\S]*?"text":\s*"((?:[^"\\]|\\.)*)")?/.exec(line)
+  if (match !== null) {
+    const start = Number(match[1])
+    const end = Number(match[2])
+    const text = (match[3] ?? '').replace(/\\n/g, ' ').replace(/\\/g, '').trim()
+    return `[${formatTimestamp(start)}–${formatTimestamp(end)}] ${text}`
+  }
+  return line
+}
+
 async function transcriptPath(ctx: Context, exec: ToolRunContext): Promise<string> {
   const agent = exec.agent
   if (agent === undefined) throw new Error('momentq tool policy requires an Agent execution')
@@ -70,6 +109,8 @@ function shadow(
   description: string,
   parameters: Record<string, unknown>,
   resolveArgs: (args: unknown, exec: ToolRunContext) => Promise<Record<string, unknown>>,
+  /** Post-execute transform: annotate transcript lines with formatted times. */
+  transformOutput?: (result: unknown) => unknown,
 ): void {
   ctx.tools.register({
     ...original,
@@ -77,7 +118,8 @@ function shadow(
     parameters,
     async execute(args, exec) {
       assertAbsent(args, ['path', 'file_path'])
-      return await original.execute(await resolveArgs(args, exec), exec)
+      const result = await original.execute(await resolveArgs(args, exec), exec)
+      return transformOutput === undefined ? result : transformOutput(result)
     },
     ...(original.output === undefined ? {} : {
       output: {
@@ -93,6 +135,19 @@ function shadow(
   })
 }
 
+/** Annotate every transcript line in a grep/read result (tolerant of shape). */
+function annotateLines(value: unknown, field: 'line' | 'text'): unknown {
+  if (typeof value !== 'object' || value === null) return value
+  const record = value as Record<string, unknown>
+  const key = field === 'line' ? 'matches' : 'lines'
+  if (!Array.isArray(record[key])) return value
+  record[key] = (record[key] as Array<Record<string, unknown>>).map(entry => {
+    const raw = entry[field]
+    return typeof raw === 'string' ? { ...entry, [field]: annotateTranscriptLine(raw) } : entry
+  })
+  return value
+}
+
 /** Restrict every Agent joined to this Preset to its own exact transcript. */
 export function apply(ctx: Context): void {
   const grep = requiredTool(ctx, 'grep')
@@ -102,16 +157,18 @@ export function apply(ctx: Context): void {
   shadow(
     ctx,
     read,
-    'Read a line window from the current video or live transcript. The transcript file cannot be changed.',
+    'Read a line window from the current video or live transcript. Every transcript row is prefixed with its [MM:SS–MM:SS] video timestamp — cite these verbatim. The transcript file cannot be changed.',
     withoutParameter(read.parameters, ['file_path']),
     async (args, exec) => ({ ...(args as Record<string, unknown>), file_path: await transcriptPath(ctx, exec) }),
+    result => annotateLines(result, 'text'),
   )
   shadow(
     ctx,
     grep,
-    'Search the current video or live transcript with a regular expression. Returns matching lines with line numbers. The transcript file cannot be changed.',
+    'Search the current video or live transcript with a regular expression. Returns matching lines with line numbers and their [MM:SS–MM:SS] video timestamps — cite those verbatim. The transcript file cannot be changed.',
     withoutParameter(grep.parameters, ['path', 'include']),
     async (args, exec) => ({ ...(args as Record<string, unknown>), path: await transcriptPath(ctx, exec) }),
+    result => annotateLines(result, 'line'),
   )
 
   for (const [toolName, order] of [
