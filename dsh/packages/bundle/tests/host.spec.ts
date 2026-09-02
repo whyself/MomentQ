@@ -181,6 +181,38 @@ describe.sequential('MomentQ Host service', () => {
     await expect(stat(dirname(artifact))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
+  it('refuses to persist a transcript whose segments carry U+FFFD encoding corruption', async () => {
+    const h = await harness()
+    await h.ctx.momentq.ensureContent(request)
+
+    // The exact corruption shape observed in the field: one Cyrillic
+    // survivor plus five U+FFFD replacement characters. Built from an
+    // explicit escape so the corruption character can never be silently
+    // rewritten to a literal '?' by an editor or transport.
+    const corruptedText = 'д' + '\uFFFD'.repeat(5)
+    await expect(h.ctx.momentq.syncTranscript(request.identity, 'asr', [
+      { start: 0, end: 1, text: corruptedText },
+      { start: 1, end: 2, text: '正常字幕' },
+    ])).rejects.toThrow(/U\+FFFD/)
+
+    expect(await h.ctx.momentq.getTranscript(request.identity)).toEqual({ source: 'none', segments: [] })
+  })
+
+  it('persists intact CJK transcript text unchanged', async () => {
+    const h = await harness()
+    await h.ctx.momentq.ensureContent(request)
+
+    const result = await h.ctx.momentq.syncTranscript(request.identity, 'asr', [
+      { start: 0, end: 1.5, text: '中文识别结果' },
+    ])
+    expect(result).toMatchObject({ source: 'asr', segments: 1 })
+    expect(await h.ctx.momentq.getTranscript(request.identity)).toEqual({
+      source: 'asr',
+      segments: [{ start: 0, end: 1.5, text: '中文识别结果' }],
+      updatedAt: expect.any(String),
+    })
+  })
+
   it('rejects a Session directory redirected to another directory inside DSH_HOME', async () => {
     const h = await harness()
     const initial = await h.ctx.momentq.ensureContent(request)

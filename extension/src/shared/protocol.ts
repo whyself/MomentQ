@@ -157,6 +157,21 @@ export type ProxyFetchMessage = {
   url: string
 }
 
+/**
+ * Panel → background: publish pre-transcription segments into the tab's
+ * subtitle state so the ticker can show them immediately (the Host
+ * syncTranscript call is durable but the UI only reads tab state). The panel
+ * always sends the CUMULATIVE batch, so a duplicate delivery (SW restart,
+ * retry) replaces instead of stacking.
+ */
+export type PreTranscribeSegmentsMessage = {
+  type: 'MOMENTQ_PRETRANSCRIBE_SEGMENTS'
+  tabId: number
+  bvid: string
+  cid: string
+  segments: BilibiliSubtitleSegment[]
+}
+
 /** Panel → content script: seek the active video to an answer's timestamp. */
 export type SeekVideoMessage = {
   type: 'MOMENTQ_SEEK_VIDEO'

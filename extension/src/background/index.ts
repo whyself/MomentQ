@@ -21,6 +21,7 @@ import type {
   AsrStartFromPanelMessage,
   AsrEventMessage,
   AsrSessionMessage,
+  PreTranscribeSegmentsMessage,
 } from '../shared/protocol'
 import { isBilibiliPageSnapshot, isPageSubtitleTracksMessageEnvelope } from '../shared/protocol'
 import { isCompanionServerMessage } from '../../../shared/src/companion-protocol'
@@ -29,7 +30,7 @@ import { MomentQClient } from '../shared/host-client'
 import { loadSettings } from '../shared/settings-store'
 import { trackNeedsChineseTranslation, transcriptExceedsHost } from '../shared/bilibili-subtitle'
 
-type WorkerRequest = PageContextRuntimeMessage | ResolvePageSnapshotMessage | { type: 'MOMENTQ_RESOLVE_DASH_AUDIO'; bvid: string; cid: string } | { type: 'MOMENTQ_PROXY_FETCH'; url: string } | GetTabStateMessage | ToggleTranscriptionMessage | ToggleCurrentTranscriptionMessage | CaptureCurrentFrameMessage | GetCurrentVideoTimeMessage | ClearAsrSubtitlesMessage | PageSubtitleTracksMessageEnvelope | AsrStartFromPanelMessage | AsrEventMessage | AsrSessionMessage | { type: 'MOMENTQ_ASR_PANEL_CAPTURE_FAILED'; tabId?: unknown; message?: unknown }
+type WorkerRequest = PageContextRuntimeMessage | ResolvePageSnapshotMessage | { type: 'MOMENTQ_RESOLVE_DASH_AUDIO'; bvid: string; cid: string } | { type: 'MOMENTQ_PROXY_FETCH'; url: string } | GetTabStateMessage | ToggleTranscriptionMessage | ToggleCurrentTranscriptionMessage | CaptureCurrentFrameMessage | GetCurrentVideoTimeMessage | ClearAsrSubtitlesMessage | PageSubtitleTracksMessageEnvelope | AsrStartFromPanelMessage | AsrEventMessage | AsrSessionMessage | PreTranscribeSegmentsMessage | { type: 'MOMENTQ_ASR_PANEL_CAPTURE_FAILED'; tabId?: unknown; message?: unknown }
 
 const storageKey = (tabId: number) => `tab:${tabId}`
 // The queue serializes fast local state mutations only. Network calls never
@@ -85,6 +86,14 @@ function requestType(value: unknown): WorkerRequest['type'] | null {
   }
   if (value.type === 'MOMENTQ_ASR_EVENT' || value.type === 'MOMENTQ_ASR_SESSION'
     || value.type === 'MOMENTQ_ASR_PANEL_CAPTURE_FAILED') return value.type
+  if (value.type === 'MOMENTQ_PRETRANSCRIBE_SEGMENTS') {
+    return typeof value.tabId === 'number' && Number.isSafeInteger(value.tabId) && value.tabId >= 0
+      && typeof value.bvid === 'string' && value.bvid !== ''
+      && typeof value.cid === 'string' && value.cid !== ''
+      && Array.isArray(value.segments)
+      ? value.type
+      : null
+  }
   return null
 }
 
@@ -1083,6 +1092,33 @@ async function handleRequest(
           typeof failure.message === 'string' ? failure.message : '标签页采集启动失败')
       })
     }
+    return null
+  }
+
+  if (type === 'MOMENTQ_PRETRANSCRIBE_SEGMENTS') {
+    const request = message as PreTranscribeSegmentsMessage
+    // The panel always sends the CUMULATIVE batch, so redelivery is
+    // idempotent: a same-video re-run (or an SW-restart retry) replaces
+    // instead of stacking windows. A mismatched identity (video switched
+    // mid-run) or a missing tab leaves the state alone.
+    await tabOperations.run(request.tabId, 'preTranscribeSegments', async () => {
+      const state = await readState(request.tabId)
+      if (state?.context.kind !== 'vod') return
+      const identity = state.context.identity
+      if (identity.bvid !== request.bvid || identity.cid !== request.cid) return
+      const sameVideoAsr = state.subtitleSource === 'asr'
+        && state.subtitleIdentity?.bvid === request.bvid
+        && state.subtitleIdentity?.cid === request.cid
+      const { subtitleDiagnostic: _diagnostic, ...withoutDiagnostic } = state
+      const next: MomentQTabState = {
+        ...withoutDiagnostic,
+        subtitleSource: 'asr',
+        subtitleSegments: (sameVideoAsr ? [] : state.subtitleSegments ?? []).concat(request.segments).slice(-5000),
+        subtitleIdentity: { bvid: request.bvid, cid: request.cid },
+      }
+      await writeState(request.tabId, next)
+      publishState(request.tabId, next)
+    })
     return null
   }
 

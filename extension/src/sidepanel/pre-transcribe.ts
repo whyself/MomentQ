@@ -69,10 +69,28 @@ export async function decodeAudioToPcm16k(
   fileBytes: ArrayBuffer,
   dash: DashAudio,
   onProgress: (seconds: number) => void,
-): Promise<{ pcm: Float32Array; durationSeconds: number }> {
+): Promise<{ pcm: Float32Array; durationSeconds: number; impliedSampleRate: number }> {
   // 1) Demux: extract AAC description + samples via mp4box.
   const extraction = await demuxAudio(fileBytes)
   if (extraction.samples.length === 0) throw new Error('音频文件中没有可解码的帧')
+  // The mp4box track fields (sample_rate, channel_count) are what resample and
+  // the decoder config trust; a wrong value there silently stretches the whole
+  // timeline (2.756× measured in the field — a 44.1 kHz stream resampled as
+  // 16 kHz, every cue 21 min past a 7 min video). The AudioSpecificConfig is
+  // the codec's own 2-byte declaration, so cross-check and override on drift.
+  const asc = parseAudioSpecificConfig(extraction.description)
+  if (asc !== null) {
+    if (extraction.sampleRate !== asc.sampleRate) {
+      console.warn(`[momentq] 音轨声明 ${extraction.sampleRate || '未知'} Hz，AudioSpecificConfig 为 ${asc.sampleRate} Hz，以后者为准`)
+      extraction.sampleRate = asc.sampleRate
+    }
+    if (extraction.channels !== asc.channels) {
+      console.warn(`[momentq] 音轨声明 ${extraction.channels || '未知'} 声道，AudioSpecificConfig 为 ${asc.channels}，以后者为准`)
+      extraction.channels = asc.channels
+    }
+  }
+  if (extraction.sampleRate <= 0) extraction.sampleRate = dash.sampleRate
+  if (extraction.channels <= 0) extraction.channels = dash.channels
   const timescale = extraction.timescale || dash.sampleRate
 
   // 2) Decode every sample to AudioData.
@@ -123,7 +141,7 @@ export async function decodeAudioToPcm16k(
   decoder.close()
   if (decodeError !== undefined) throw new Error(`音频解码失败：${decodeError.message}`)
 
-  // 3) Mix every AudioData down to 16 kHz mono, in presentation order.
+  // 3) Mix every AudioData down to mono, in presentation order.
   decodedAudio.sort((left, right) => left.timestamp - right.timestamp)
   const chunks: Float32Array[] = []
   let total = 0
@@ -135,7 +153,6 @@ export async function decodeAudioToPcm16k(
     // frames*4 for a stereo source still fails because both PLANES count.
     // Allocate from the format's own frame size and read plane 0 only.
     const channels = Math.max(1, audio.numberOfChannels)
-    const format = audio.format ?? 'f32-planar'
     // Measured mix: MOST chunks are f32-planar but SOME are interleaved;
     // a planar multi-channel read on those throws 'Invalid planeIndex'.
     // Branch per chunk, and fall back to channel 0 on any plane error
@@ -143,26 +160,17 @@ export async function decodeAudioToPcm16k(
     const planeBytes = audio.allocationSize({ planeIndex: 0, format: 'f32' })
     const plane0 = new Float32Array(planeBytes / 4)
     audio.copyTo(plane0, { planeIndex: 0, format: 'f32' })
+    // Measured on real Edge with this decoder: plane 0 requested as f32 on
+    // an f32-planar stereo source returns the WHOLE clip INTERLEAVED
+    // (2048 floats for 1024 frames), not one plane. Trust the arithmetic —
+    // floats === frames * channels means interleaved — and average channel
+    // pairs down to exactly `frames` mono samples. Keeping both channels'
+    // worth of floats as 'samples' doubled every timestamp (the reported
+    // 927s for a 464s video, exact 2x).
     let mono: Float32Array
-    if (channels > 1 && format.includes('planar')) {
-      try {
-        mono = new Float32Array(plane0.length)
-        for (let channel = 1; channel < channels; channel += 1) {
-          const plane = new Float32Array(audio.allocationSize({ planeIndex: channel, format: 'f32' }) / 4)
-          audio.copyTo(plane, { planeIndex: channel, format: 'f32' })
-          for (let frame = 0; frame < plane.length; frame += 1) {
-            mono[frame] = (mono[frame] ?? 0) + (plane[frame] ?? 0)
-          }
-        }
-        for (let frame = 0; frame < mono.length; frame += 1) {
-          mono[frame] = (mono[frame] ?? 0) / channels + (plane0[frame] ?? 0) / channels
-        }
-      } catch {
-        mono = plane0
-      }
-    } else if (channels > 1) {
-      mono = new Float32Array(audio.numberOfFrames)
-      for (let frame = 0; frame < audio.numberOfFrames; frame += 1) {
+    if (channels > 1 && plane0.length === frames * channels) {
+      mono = new Float32Array(frames)
+      for (let frame = 0; frame < frames; frame += 1) {
         let sum = 0
         for (let channel = 0; channel < channels; channel += 1) {
           sum += plane0[frame * channels + channel] ?? 0
@@ -173,18 +181,51 @@ export async function decodeAudioToPcm16k(
       mono = plane0
     }
     audio.close()
-    chunks.push(resample(mono, extraction.sampleRate || dash.sampleRate, 16_000))
+    chunks.push(mono)
     total += frames
     durationUs += audio.duration ?? 0
     onProgress(durationUs / 1_000_000)
   }
-  const pcm = new Float32Array(total)
-  let offset = 0
+  // 4) Resample to 16 kHz with a rate derived from OBSERVATION: the decoder's
+  // frame count against the media clock (sum of AudioData durations, derived
+  // from the chunk timestamps we fed in). Trusting the declared rate (track
+  // box or AudioSpecificConfig) is what stretched the timeline 2.756× in the
+  // field — the track held its raw 44.1 kHz frame count, re-labelled 16 kHz.
+  // The observed ratio yields the true media span regardless of that.
+  const mediaSeconds = durationUs / 1_000_000
+  const declaredRate = extraction.sampleRate || dash.sampleRate
+  let actualRate = declaredRate
+  if (mediaSeconds > 0) {
+    const implied = total / mediaSeconds
+    if (implied > 0 && Math.abs(implied - declaredRate) / declaredRate > 0.05) {
+      console.warn(`[momentq] 声明采样率 ${declaredRate} Hz，解码器实际输出 ${Math.round(implied)} Hz，按实际值重采样`)
+      actualRate = implied
+    }
+  }
+  if (!(actualRate > 8_000 && actualRate < 96_000)) {
+    throw new Error(`无法确定音频采样率（实测 ${Math.round(actualRate)} Hz），不能安全生成字幕`)
+  }
+  const resampled: Float32Array[] = []
+  let resampledTotal = 0
   for (const chunk of chunks) {
+    const out = resample(chunk, actualRate, 16_000)
+    resampled.push(out)
+    resampledTotal += out.length
+  }
+  // Final consistency: the 16 kHz track must span the same media duration as
+  // the media clock — otherwise some rate assumption is wrong and the cues
+  // will not match the video (the "every cue 21 min late" failure mode).
+  const pcmSeconds = resampledTotal / 16_000
+  if (mediaSeconds > 0 && Math.abs(pcmSeconds - mediaSeconds) / mediaSeconds > 0.02) {
+    throw new Error(`解码音频时长不一致（${Math.round(pcmSeconds)}s vs 媒体时钟 ${Math.round(mediaSeconds)}s），字幕会与视频错位，请重新运行预识别`)
+  }
+  const pcm = new Float32Array(resampledTotal)
+  let offset = 0
+  for (const chunk of resampled) {
     pcm.set(chunk, offset)
     offset += chunk.length
   }
-  return { pcm, durationSeconds: durationUs / 1_000_000 }
+  return { pcm, durationSeconds: mediaSeconds, impliedSampleRate: actualRate }
 }
 
 type Extraction = {
@@ -218,6 +259,39 @@ function extractAudioSpecificConfig(bytes: Uint8Array): Uint8Array | undefined {
     }
   }
   return undefined
+}
+
+/**
+ * Parse an AAC AudioSpecificConfig (ISO/IEC 13818-7). Bilibili's streams are
+ * always the 2-byte form (0x12 0x10 = AAC-LC 44.1 kHz stereo); the result is
+ * the codec's own declaration of rate + channel count, authoritative over the
+ * mp4box track fields. Returns null on anything that is not a clean LC/HE
+ * config (a SBR/PS extension past the first two bytes is fine — the fields
+ * we read sit in front of it).
+ */
+export function parseAudioSpecificConfig(bytes: Uint8Array | undefined): { sampleRate: number; channels: number } | null {
+  if (bytes === undefined || bytes.length < 2) return null
+  // MSB-first bit reader; the two fields we need are the first 13 bits.
+  let cursor = 0
+  const next = (bits: number): number => {
+    let value = 0
+    for (let index = 0; index < bits; index += 1) {
+      const byte = bytes[cursor >> 3]
+      if (byte === undefined) return 0
+      value = (value << 1) | ((byte >> (7 - (cursor & 7))) & 1)
+      cursor += 1
+    }
+    return value
+  }
+  const objectType = next(5)
+  if (objectType !== 2 && objectType !== 5) return null
+  const rateIndex = next(4)
+  const rates = [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350]
+  const sampleRate = rateIndex < 13 ? rates[rateIndex] : undefined
+  if (sampleRate === undefined) return null
+  const channels = next(4)
+  if (channels < 1 || channels > 8) return null
+  return { sampleRate, channels }
 }
 
 /** mp4box-driven demux of the DASH m4s audio track. */

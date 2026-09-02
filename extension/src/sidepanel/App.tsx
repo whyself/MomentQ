@@ -212,6 +212,12 @@ export function App({ subscribe }: {
       try {
         if (current.context.kind !== 'vod') return
         const identity = current.context.identity
+        // `all` is the cumulative transcript; `pending` is the unflushed tail
+        // that re-triggers a flush. The Host's syncTranscript REPLACES the
+        // whole transcript, so a flush must send `all` — a tail-only send
+        // erased every earlier window (the on-disk transcript ended up being
+        // just the last recognized window).
+        const all: Array<{ start: number; end: number; text: string }> = []
         let pending: Array<{ start: number; end: number; text: string }> = []
         let flushTimer: ReturnType<typeof setTimeout> | undefined
         let flushRetrying = false
@@ -224,9 +230,8 @@ export function App({ subscribe }: {
             // Keep the batch until the Host accepts it: a transient failure
             // (panel tab frozen mid-run, SW restart) re-sends on the next
             // flush instead of silently dropping recognized text.
-            const batch = pending
-            await client.syncTranscript(identity, 'asr', batch)
-            pending = pending.slice(batch.length)
+            await client.syncTranscript(identity, 'asr', all)
+            pending = []
           } finally {
             flushRetrying = false
           }
@@ -238,7 +243,22 @@ export function App({ subscribe }: {
           model: config?.whisperModel ?? 'base',
           onProgress: progress => { setPreTranscribe({ running: true, message: progress.message, fraction: progress.fraction }) },
           onSegments: segments => {
-            pending.push(...segments)
+            for (const segment of segments) {
+              all.push(segment)
+              pending.push(segment)
+            }
+            // Publish the cumulative batch into the tab state so the subtitle
+            // ticker shows it while the run is in flight — the Host sync is
+            // durable, but the UI only ever reads tab state. The background
+            // replaces on same-identity redelivery, so a dropped-and-retried
+            // message cannot stack windows.
+            void sendWithRetry({
+              type: 'MOMENTQ_PRETRANSCRIBE_SEGMENTS',
+              tabId: current.tabId,
+              bvid: identity.bvid,
+              cid: identity.cid,
+              segments: all,
+            }).catch(() => {})
             // Persist per window so a cancelled run still keeps its tail.
             if (flushTimer === undefined) {
               flushTimer = setTimeout(() => { flushTimer = undefined; void flush() }, 1_500)

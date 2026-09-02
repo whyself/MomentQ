@@ -343,6 +343,13 @@ export class MomentQService extends Service {
     source: 'bilibili' | 'asr',
     segments: readonly TranscriptSegment[],
   ): Promise<SyncTranscriptResult> {
+    // U+FFFD marks text already decoded from the wrong byte encoding
+    // upstream (mojibake). Persisting it would turn a transient encoding
+    // failure into permanent corrupted subtitles, so refuse the batch.
+    const corrupted = segments.filter(segment => segment.text.includes('\uFFFD')).length
+    if (corrupted > 0) {
+      throw new Error(`does not accept transcript with ${corrupted} of ${segments.length} segment(s) containing U+FFFD (upstream encoding corruption)`)
+    }
     return await this.forContent(identity, async () => {
       const cwd = contentDirectory(this.root, identity)
       const state = await readState(cwd)

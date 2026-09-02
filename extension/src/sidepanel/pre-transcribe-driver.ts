@@ -74,13 +74,28 @@ export async function runPreTranscription(options: {
   throwIfCancelled()
 
   onProgress({ fraction: 0.18, stage: 'decoding', message: '正在解码音频…' })
-  const { pcm } = await decodeAudioToPcm16k(fileBytes, dash, (seconds) => {
+  const { pcm, durationSeconds: decodedSeconds, impliedSampleRate } = await decodeAudioToPcm16k(fileBytes, dash, (seconds) => {
     const total = durationSeconds ?? seconds
     const fraction = total > 0 ? 0.18 + 0.12 * Math.min(1, seconds / total) : 0.22
     onProgress({ fraction, stage: 'decoding', message: `解码中 ${Math.round(seconds)}s…` })
   })
   throwIfCancelled()
   if (pcm.length === 0) throw new Error('解码后没有音频数据')
+  // Field diagnostics: the rate the decoder ACTUALLY produced (frames / media
+  // clock) vs what the container declared. A mismatch here is exactly the
+  // signature of the 2.756× timeline stretch.
+  console.info(`[momentq] 解码完成：${Math.round(pcm.length / 16_000)}s @16kHz，实际采样率 ${Math.round(impliedSampleRate)} Hz，媒体时钟 ${Math.round(decodedSeconds)}s`)
+  // The decoded media duration must track the page's known duration. A large
+  // divergence is the signature of a broken sample rate (measured in the
+  // field: 44.1 kHz passed as 16 kHz stretched the timeline 2.756×, putting
+  // every cue ~21 min past a 7 min video). Fail loudly instead of saving a
+  // silently wrong transcript.
+  if (durationSeconds && decodedSeconds > 0) {
+    const deviation = Math.abs(decodedSeconds - durationSeconds) / durationSeconds
+    if (deviation > 0.2) {
+      throw new Error(`解码出的音频时长 ${Math.round(decodedSeconds)}s 与页面时长 ${Math.round(durationSeconds)}s 偏差过大（${Math.round(deviation * 100)}%），请重新运行预识别`)
+    }
+  }
 
   const windows = Math.ceil(pcm.length / WINDOW_SAMPLES)
   for (let index = 0; index < windows; index += 1) {
