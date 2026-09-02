@@ -199,7 +199,7 @@ export async function startCompanionServer(
         return
       }
       try {
-        const upstream = await fetch(target, {
+        const upstream = await (options.fetcher ?? fetch)(target, {
           headers: {
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
             referer: 'https://www.bilibili.com/',
@@ -209,17 +209,24 @@ export async function startCompanionServer(
           sendJson(502, { ok: false, error: { code: 'upstream-failed', message: `CDN returned HTTP ${upstream.status}` } })
           return
         }
-        response.writeHead(200, {
-          'content-type': upstream.headers.get('content-type') ?? 'application/octet-stream',
-          ...(request.headers.origin === undefined ? {} : { 'access-control-allow-origin': request.headers.origin }),
-        })
+        // Chromium logs a console warning for every response that lacks
+        // Content-Length ("Unable to determine content-length…"). Buffer the
+        // audio (a few dozen MB on the local loopback) so the browser always
+        // receives an explicit length.
         const reader = upstream.body.getReader()
+        const chunks: Buffer[] = []
         for (;;) {
           const { done, value } = await reader.read()
           if (done) break
-          response.write(Buffer.from(value))
+          chunks.push(Buffer.from(value))
         }
-        response.end()
+        const body = Buffer.concat(chunks)
+        response.writeHead(200, {
+          'content-type': upstream.headers.get('content-type') ?? 'application/octet-stream',
+          'content-length': String(body.length),
+          ...(request.headers.origin === undefined ? {} : { 'access-control-allow-origin': request.headers.origin }),
+        })
+        response.end(body)
       } catch (error) {
         if (!response.headersSent) {
           sendJson(502, { ok: false, error: { code: 'upstream-failed', message: error instanceof Error ? error.message : String(error) } })

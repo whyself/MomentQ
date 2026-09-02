@@ -297,3 +297,47 @@ describe('companion ASR server', () => {
     }
   })
 })
+
+describe('companion /proxy/audio', () => {
+  const startProxyServer = (fetcher: typeof fetch) => startCompanionServer(config, { fetcher })
+
+  it('forwards the CDN body with an explicit content-length', async () => {
+    const audioBody = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])
+    // A single-slot array rather than `Headers | null`: the assignment
+    // happens inside the mock fetcher's closure, which TS does not track,
+    // so a `null`-initialized let would stay narrowed to `null` at the
+    // assertion sites below.
+    const seenHeaders: Headers[] = []
+    const handle = await startProxyServer(((async (input: URL | string, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      expect(url).toBe('https://example.bilivideo.com/audio.m4s')
+      seenHeaders[0] = new Headers(init?.headers)
+      // Deliberately no content-length: the companion must add one.
+      return new Response(audioBody, { status: 200, headers: { 'content-type': 'audio/mp4' } })
+    }) as typeof fetch))
+    try {
+      const response = await fetch(`http://127.0.0.1:${handle.port}/proxy/audio?url=${encodeURIComponent('https://example.bilivideo.com/audio.m4s')}`)
+      expect(response.status).toBe(200)
+      expect(response.headers.get('content-type')).toBe('audio/mp4')
+      expect(response.headers.get('content-length')).toBe(String(audioBody.length))
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(audioBody)
+      // The CDN only serves audio to a bilibili.com referer + browser UA.
+      expect(seenHeaders[0]?.get('referer')).toBe('https://www.bilibili.com/')
+      expect(seenHeaders[0]?.get('user-agent')).toContain('Chrome/')
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('rejects urls outside the Bilibili CDN without calling upstream', async () => {
+    const handle = await startProxyServer(((async () => {
+      throw new Error('upstream must not be called')
+    }) as typeof fetch))
+    try {
+      const response = await fetch(`http://127.0.0.1:${handle.port}/proxy/audio?url=${encodeURIComponent('https://evil.example.com/audio.m4s')}`)
+      expect(response.status).toBe(400)
+    } finally {
+      await handle.close()
+    }
+  })
+})
