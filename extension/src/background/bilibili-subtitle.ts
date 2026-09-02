@@ -37,17 +37,20 @@ export async function fetchBilibiliSubtitle(
       // Identity is mandatory. A stale/cached player response must never be
       // relabelled as the requested video merely because its URL was current.
       if (index !== null && index.bvid === bvid && index.cid === cid) {
-        // The extension's query is unsigned; its AI tracks can be poisoned
-        // server-side (translations attached to the wrong video). Only
-        // official tracks are trusted from this channel — AI tracks arrive
-        // through the player's own signed responses via the page tap.
-        const officialTracks = subtitleTracks(payload, true)
-        diagnostic = officialTracks.length > 0
-          ? `官方轨 ${officialTracks.length} 条`
-          : index.tracks.length > 0
-            ? `仅 AI 轨（未签名通道不导入）: ${index.trackLabels.slice(0, 3).join(', ')}`
-            : index.needLogin ? '无轨道（B 站提示字幕需登录生成）' : '无轨道'
-        for (const url of officialTracks) {
+        // Track trust policy, revised after the field report this comment's
+        // history describes: this query IS credentialed (cookies included),
+        // i.e. materially the same request the player itself makes — so its
+        // AI tracks are imported too, behind the defenses that actually
+        // matter: identity echo above, proven-trackless veto in the caller,
+        // and the per-video duration gate applied to every import. The
+        // player-tap remains as a redundant second channel. (The original
+        // poison incident came from the LEGACY player endpoint, which stays
+        // excluded here.)
+        const trustedTracks = subtitleTracks(payload, false)
+        diagnostic = trustedTracks.length > 0
+          ? `字幕轨 ${trustedTracks.length} 条`
+          : index.needLogin ? '无轨道（B 站提示字幕需登录生成）' : '无轨道'
+        for (const url of trustedTracks) {
           const response = await request(url, { credentials: 'include', signal: AbortSignal.timeout(10_000) })
           if (!response.ok) continue
           const segments = normalizeSubtitleBody(await response.json())
